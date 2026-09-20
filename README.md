@@ -46,8 +46,9 @@ the server — it will reseed automatically.
 - View a spa's services, pick a date, see real-time slot availability (with rooms-left indicators when a service has limited capacity)
 - Apply a coupon code at checkout to see the discount before paying
 - Choose how to receive booking confirmation — Email, SMS, or WhatsApp — at checkout
-- Book a slot and pay (simulated payment gateway) — booking confirms instantly and a confirmation message is sent on the chosen channel
-- View/cancel bookings ("My bookings"), including which channel the confirmation was sent on
+- **Choose how to pay: online now, or at the spa.** Paying online runs through the real payment flow below. Choosing "Pay at the spa" reserves the slot and confirms the booking immediately with no online charge — the customer pays cash/card/UPI in person, and the spa owner marks it paid afterward from their dashboard.
+- Book a slot — booking confirms instantly and a confirmation message is sent on the chosen channel
+- View/cancel bookings ("My bookings"), including which channel the confirmation was sent on and whether payment is still due at the spa
 
 **Spa owner side**
 - Register a spa (goes live after admin approval)
@@ -58,6 +59,7 @@ the server — it will reseed automatically.
 - Upload photos and short videos of the spa (up to 12 files, 15MB each — JPG/PNG/WEBP/GIF or MP4/WEBM/MOV). The first photo becomes the listing's cover image automatically; you can change the cover or delete files anytime.
 - Set a discount on any service (0–90%). Customers see the original price struck through next to the discounted price, and are charged the discounted amount at checkout.
 - View incoming bookings with customer contact info, mark as completed
+- **Collect and record pay-at-spa payments**: the Bookings tab shows a running total of how much is still owed in cash/card/UPI across all upcoming pay-at-spa bookings. "Mark as paid" records exactly how the customer paid, for a clean reconciliation trail alongside your online payments.
 
 **Admin side**
 - Approve/reject new spa listings

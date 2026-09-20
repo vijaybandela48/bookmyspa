@@ -49,6 +49,16 @@ const spaId = new URLSearchParams(window.location.search).get('id');
 let spaData = null, servicesData = [];
 let selectedServiceId = null, selectedDate = null, selectedSlot = null;
 let appliedCoupon = null;
+let paymentMode = 'online';
+
+function setPaymentMode(mode) {
+  paymentMode = mode;
+  document.getElementById('modeOnlineBtn').classList.toggle('active', mode === 'online');
+  document.getElementById('modeVenueBtn').classList.toggle('active', mode === 'pay_at_venue');
+  document.getElementById('onlinePaymentFields').style.display = mode === 'online' ? 'block' : 'none';
+  document.getElementById('venueHint').style.display = mode === 'pay_at_venue' ? 'block' : 'none';
+  document.getElementById('confirmPayBtn').textContent = mode === 'online' ? 'Pay & confirm' : 'Confirm booking';
+}
 
 function todayISO() { return new Date().toISOString().slice(0,10); }
 function dateOptions() {
@@ -205,6 +215,7 @@ function openPayModal() {
     return;
   }
   appliedCoupon = null;
+  paymentMode = 'online';
   const service = servicesData.find(s => s.id === selectedServiceId);
   const modal = document.getElementById('payModal');
   document.getElementById('payModalBody').innerHTML = `
@@ -217,12 +228,20 @@ function openPayModal() {
       <button type="button" class="btn small outline" style="white-space:nowrap" onclick="applyCouponCode()">Apply</button>
     </div>
     <p class="helper-text" id="couponMsg"></p>
-    <label style="margin-top:16px">Payment method (simulated)</label>
-    <select id="payMethod">
-      <option value="card">Credit / Debit Card</option>
-      <option value="upi">UPI</option>
-      <option value="netbanking">Net Banking</option>
-    </select>
+    <label style="margin-top:16px">How would you like to pay?</label>
+    <div class="role-toggle">
+      <button type="button" class="active" id="modeOnlineBtn" onclick="setPaymentMode('online')">💳 Pay online now</button>
+      <button type="button" id="modeVenueBtn" onclick="setPaymentMode('pay_at_venue')">🏢 Pay at the spa</button>
+    </div>
+    <div id="onlinePaymentFields">
+      <label>Payment method (simulated)</label>
+      <select id="payMethod">
+        <option value="card">Credit / Debit Card</option>
+        <option value="upi">UPI</option>
+        <option value="netbanking">Net Banking</option>
+      </select>
+    </div>
+    <p class="helper-text" id="venueHint" style="display:none;margin-top:8px">Your slot is reserved right away — pay by cash, card or UPI when you arrive.</p>
     <label>Send booking confirmation via</label>
     <select id="notifyChannel">
       <option value="email">✉️ Email (${user.email})</option>
@@ -288,14 +307,22 @@ function closePayModal() { document.getElementById('payModal').classList.remove(
 
 async function confirmBooking() {
   const btn = document.getElementById('confirmPayBtn');
+  const notifyChannel = document.getElementById('notifyChannel').value;
   btn.disabled = true; btn.textContent = 'Processing…';
   try {
-    const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot };
+    const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode, notifyChannel };
     if (appliedCoupon && appliedCoupon.valid) bookingBody.couponCode = appliedCoupon.code;
-    const { booking } = await API.post('/bookings', bookingBody);
+    const { booking, message } = await API.post('/bookings', bookingBody);
+
+    if (paymentMode === 'pay_at_venue') {
+      // Booking is already confirmed server-side — nothing else to do.
+      toast(message || 'Booking confirmed! Pay at the spa.');
+      closePayModal();
+      setTimeout(() => window.location.href = '/account.html', 900);
+      return;
+    }
 
     const order = await API.post(`/bookings/${booking.id}/checkout`);
-    const notifyChannel = document.getElementById('notifyChannel').value;
 
     if (order.mode === 'razorpay') {
       await loadRazorpayScript();

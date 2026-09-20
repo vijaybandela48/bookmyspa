@@ -56,6 +56,7 @@ async function load() {
           </div>
           <div class="foot-row">
             <span class="badge ${b.status}">${statusLabel[b.status]}</span>
+            ${b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' ? `<span class="badge pending">Pay ${money(b.amount)} at the spa</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
             ${b.status === 'confirmed' && b.notify_channel ? `<span class="helper-text" style="margin:0">${{email:'✉️ Email',sms:'💬 SMS',whatsapp:'🟢 WhatsApp'}[b.notify_channel]} sent</span>` : ''}
             ${b.status === 'pending_payment' ? `<a class="btn small gold" href="/spa.html?id=${b.spa_id}">Pay now</a>` : ''}

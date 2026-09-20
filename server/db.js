@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   coupon_discount REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending_payment' CHECK(status IN ('pending_payment','confirmed','cancelled','completed')),
   payment_status TEXT NOT NULL DEFAULT 'unpaid' CHECK(payment_status IN ('unpaid','paid','refunded')),
+  payment_mode TEXT NOT NULL DEFAULT 'online' CHECK(payment_mode IN ('online','pay_at_venue')),
   notify_channel TEXT,
   notify_status TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -150,6 +151,9 @@ try {
   }
   if (!bookingCols.includes('notify_status')) {
     db.exec('ALTER TABLE bookings ADD COLUMN notify_status TEXT');
+  }
+  if (!bookingCols.includes('payment_mode')) {
+    db.exec("ALTER TABLE bookings ADD COLUMN payment_mode TEXT NOT NULL DEFAULT 'online'");
   }
   const spaCols = db.prepare("PRAGMA table_info(spas)").all().map((c) => c.name);
   if (!spaCols.includes('latitude')) {

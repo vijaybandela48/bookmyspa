@@ -415,6 +415,9 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       const body = await parseBody(req);
       const { spaId, serviceId, date, startTime, couponCode } = body;
+      const paymentMode = body.paymentMode === 'pay_at_venue' ? 'pay_at_venue' : 'online';
+      const notifyChannel = ['email', 'sms', 'whatsapp'].includes(body.notifyChannel) ? body.notifyChannel : 'email';
+
       const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(spaId);
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ?').get(serviceId, spaId);
       if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
@@ -436,9 +439,34 @@ async function handleApi(req, res, pathname, query) {
         appliedCode = result.coupon.code;
       }
 
+      if (paymentMode === 'pay_at_venue') {
+        // No online charge — the slot is reserved and the booking is confirmed
+        // immediately; the spa collects cash/card/UPI in person and the owner
+        // marks it paid afterward from their dashboard.
+        const info = db.prepare(
+          `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
+           VALUES (?,?,?,?,?,?,?,?,?,'confirmed','unpaid','pay_at_venue')`
+        ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
+
+        if (appliedCode) {
+          db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(spaId, appliedCode);
+        }
+
+        let booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
+        let notification = null;
+        try {
+          const customer = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+          notification = await notifier.sendBookingConfirmation({ channel: notifyChannel, booking, customer, spa, service });
+          booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(booking.id);
+        } catch (e) {
+          notification = { status: 'failed', detail: e.message };
+        }
+        return sendJSON(res, 201, { booking, notification, message: `Booking confirmed. Pay ₹${finalAmount.toLocaleString('en-IN')} at the spa.` });
+      }
+
       const info = db.prepare(
-        `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status)
-         VALUES (?,?,?,?,?,?,?,?,?,'pending_payment','unpaid')`
+        `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
+         VALUES (?,?,?,?,?,?,?,?,?,'pending_payment','unpaid','online')`
       ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
 
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
@@ -938,6 +966,27 @@ async function handleApi(req, res, pathname, query) {
       if (!['completed', 'cancelled'].includes(body.status)) return sendJSON(res, 400, { error: 'status must be completed or cancelled.' });
       db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(body.status, booking.id);
       return sendJSON(res, 200, { message: 'Booking updated.' });
+    }
+
+    if (parts[1] === 'owner' && parts[2] === 'bookings' && parts[4] === 'mark-paid' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const booking = db.prepare(
+        `SELECT b.* FROM bookings b JOIN spas s ON s.id = b.spa_id WHERE b.id = ? AND s.owner_id = ?`
+      ).get(parts[3], user.id);
+      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (booking.payment_status === 'paid') return sendJSON(res, 409, { error: 'This booking is already marked as paid.' });
+      if (!['confirmed', 'completed'].includes(booking.status)) {
+        return sendJSON(res, 409, { error: 'Only confirmed or completed bookings can be marked as paid.' });
+      }
+      const body = await parseBody(req);
+      const method = ['cash', 'card', 'upi'].includes(body.method) ? body.method : 'cash';
+
+      db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)')
+        .run(booking.id, booking.amount, method, 'success', 'COUNTER_' + crypto.randomBytes(6).toString('hex').toUpperCase());
+      db.prepare("UPDATE bookings SET payment_status = 'paid' WHERE id = ?").run(booking.id);
+
+      return sendJSON(res, 200, { message: `Marked as paid (${method}).` });
     }
 
     // ---------------- ADMIN ----------------

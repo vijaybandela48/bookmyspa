@@ -698,7 +698,21 @@ async function loadOwnerBookings() {
       el.innerHTML = `<div class="empty-state"><div class="big">📭</div><p>No bookings yet.</p></div>`;
       return;
     }
-    el.innerHTML = bookings.map(b => `
+
+    const pendingCollection = bookings.filter(b =>
+      b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' && ['confirmed', 'completed'].includes(b.status)
+    );
+    const pendingTotal = pendingCollection.reduce((sum, b) => sum + b.amount, 0);
+    const summaryHtml = pendingCollection.length
+      ? `<div class="panel" style="margin-bottom:16px;background:var(--stone-dark);border-color:var(--gold)">
+           <strong style="color:var(--moss-deep)">${money(pendingTotal)} pending collection</strong>
+           <span class="helper-text" style="margin:0"> across ${pendingCollection.length} pay-at-spa booking${pendingCollection.length !== 1 ? 's' : ''}</span>
+         </div>`
+      : '';
+
+    el.innerHTML = summaryHtml + bookings.map(b => {
+      const payAtVenueUnpaid = b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid';
+      return `
       <div class="ticket">
         <div class="stub">
           <div class="d">${new Date(b.booking_date+'T00:00:00').getDate()}</div>
@@ -715,12 +729,15 @@ async function loadOwnerBookings() {
           </div>
           <div class="foot-row">
             <span class="badge ${b.status}">${statusLabel[b.status]}</span>
+            ${payAtVenueUnpaid ? `<span class="badge pending">Pay at spa — due</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
-            ${b.status === 'confirmed' ? `<button class="btn small gold" onclick="setBookingStatus(${b.id},'completed')">Mark completed</button>` : ''}
+            ${payAtVenueUnpaid ? `<button class="btn small gold" onclick="markAsPaid(${b.id})">Mark as paid</button>` : ''}
+            ${b.status === 'confirmed' ? `<button class="btn small outline" onclick="setBookingStatus(${b.id},'completed')">Mark completed</button>` : ''}
           </div>
         </div>
       </div>
-    `).join('');
+      `;
+    }).join('');
   } catch (e) {
     el.innerHTML = `<p>${e.message}</p>`;
   }
@@ -730,6 +747,18 @@ async function setBookingStatus(id, status) {
   try {
     await API.put(`/owner/bookings/${id}/status`, { status });
     toast('Booking updated.');
+    loadOwnerBookings();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function markAsPaid(id) {
+  const method = prompt('How did the customer pay? Type: cash, card, or upi', 'cash');
+  if (method === null) return;
+  const clean = method.trim().toLowerCase();
+  if (!['cash', 'card', 'upi'].includes(clean)) { toast('Please enter cash, card, or upi.', 'error'); return; }
+  try {
+    const r = await API.put(`/owner/bookings/${id}/mark-paid`, { method: clean });
+    toast(r.message);
     loadOwnerBookings();
   } catch (e) { toast(e.message, 'error'); }
 }

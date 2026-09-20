@@ -24,11 +24,11 @@
 
 const { db } = require('../db');
 
-function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress }) {
+function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress, payAtVenue }) {
   return `Hi ${customerName}, your booking is confirmed!\n\n` +
     `${serviceName} at ${spaName}\n` +
     `${date} at ${startTime}\n` +
-    `Amount paid: Rs. ${amount}\n` +
+    (payAtVenue ? `Amount due at the spa: Rs. ${amount}\n` : `Amount paid: Rs. ${amount}\n`) +
     (spaAddress ? `Location: ${spaAddress}\n` : '') +
     `\nSee you there! — SpaBook`;
 }
@@ -98,6 +98,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     startTime: booking.start_time,
     amount: booking.amount,
     spaAddress: spa.address,
+    payAtVenue: booking.payment_mode === 'pay_at_venue',
   });
 
   let result;
