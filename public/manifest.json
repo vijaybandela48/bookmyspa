@@ -1,0 +1,16 @@
+{
+  "name": "SpaBook — Massage & Spa Booking",
+  "short_name": "SpaBook",
+  "description": "Book massage and spa appointments online. Browse nearby spas, compare prices, and pay securely.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F4EFE3",
+  "theme_color": "#23392C",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin panel — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div class="wrap page-body">
+  <div class="eyebrow">Platform admin</div>
+  <h1 style="margin-top:4px">Admin panel</h1>
+
+  <div class="stat-grid" id="stats" style="margin-top:24px"></div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="spas" onclick="switchTab('spas')">Spa approvals</div>
+    <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">All bookings</div>
+    <div class="tab" data-tab="users" onclick="switchTab('users')">Users</div>
+  </div>
+
+  <div id="tab-spas"><div id="spaList"><p>Loading…</p></div></div>
+  <div id="tab-bookings" style="display:none"><div id="bookingList"><p>Loading…</p></div></div>
+  <div id="tab-users" style="display:none"><div id="userList"><p>Loading…</p></div></div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav('admin');
+if (!API.isLoggedIn() || API.user().role !== 'admin') window.location.href = '/login.html';
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  ['spas','bookings','users'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  if (name === 'bookings') loadBookings();
+  if (name === 'users') loadUsers();
+}
+
+async function loadStats() {
+  try {
+    const s = await API.get('/admin/stats');
+    document.getElementById('stats').innerHTML = `
+      <div class="stat-card"><div class="num">${s.totalSpas}</div><div class="label">Total spas</div></div>
+      <div class="stat-card"><div class="num">${s.pendingSpas}</div><div class="label">Pending review</div></div>
+      <div class="stat-card"><div class="num">${s.totalUsers}</div><div class="label">Users</div></div>
+      <div class="stat-card"><div class="num">${s.totalBookings}</div><div class="label">Total bookings</div></div>
+      <div class="stat-card"><div class="num">${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
+      <div class="stat-card"><div class="num">${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
+    `;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function statusBadge(s) {
+  const labels = { pending: 'Pending review', approved: 'Live', rejected: 'Rejected' };
+  return `<span class="badge ${s}">${labels[s]}</span>`;
+}
+
+async function loadSpas() {
+  const el = document.getElementById('spaList');
+  try {
+    const { spas } = await API.get('/admin/spas');
+    if (!spas.length) { el.innerHTML = `<p class="helper-text">No spas listed yet.</p>`; return; }
+    el.innerHTML = spas.map(s => `
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
+          <div>
+            <h3 style="margin-bottom:4px">${s.cover_emoji} ${s.name}</h3>
+            <div class="helper-text">${s.city} ${s.address ? '· ' + s.address : ''} · Owner: ${s.owner_name} (${s.owner_email})</div>
+          </div>
+          ${statusBadge(s.status)}
+        </div>
+        <p style="font-size:14px;color:var(--ink-soft);margin:10px 0">${s.description || ''}</p>
+        <div style="display:flex;gap:8px">
+          ${s.status !== 'approved' ? `<button class="btn small gold" onclick="setSpaStatus(${s.id},'approved')">Approve</button>` : ''}
+          ${s.status !== 'rejected' ? `<button class="btn small outline" onclick="setSpaStatus(${s.id},'rejected')">Reject</button>` : ''}
+          ${s.status !== 'pending' ? `<button class="btn small outline" onclick="setSpaStatus(${s.id},'pending')">Set pending</button>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+async function setSpaStatus(id, status) {
+  try {
+    await API.put(`/admin/spas/${id}/status`, { status });
+    toast('Spa status updated.');
+    loadSpas(); loadStats();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
+
+async function loadBookings() {
+  const el = document.getElementById('bookingList');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { bookings } = await API.get('/admin/bookings');
+    if (!bookings.length) { el.innerHTML = `<p class="helper-text">No bookings yet.</p>`; return; }
+    el.innerHTML = `
+      <div class="panel" style="padding:0;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+          <thead><tr style="background:var(--stone-dark);text-align:left">
+            <th style="padding:10px 14px">Customer</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Service</th>
+            <th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Status</th>
+          </tr></thead>
+          <tbody>
+            ${bookings.map(b => `
+              <tr style="border-top:1px solid var(--line)">
+                <td style="padding:10px 14px">${b.customer_name}</td>
+                <td style="padding:10px 14px">${b.spa_name}</td>
+                <td style="padding:10px 14px">${b.service_name}</td>
+                <td style="padding:10px 14px">${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
+                <td style="padding:10px 14px" class="mono">${money(b.amount)}</td>
+                <td style="padding:10px 14px"><span class="badge ${b.status}">${statusLabel[b.status]}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+async function loadUsers() {
+  const el = document.getElementById('userList');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { users } = await API.get('/admin/users');
+    el.innerHTML = `
+      <div class="panel" style="padding:0;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+          <thead><tr style="background:var(--stone-dark);text-align:left">
+            <th style="padding:10px 14px">Name</th><th style="padding:10px 14px">Email</th><th style="padding:10px 14px">Phone</th><th style="padding:10px 14px">Role</th>
+          </tr></thead>
+          <tbody>
+            ${users.map(u => `
+              <tr style="border-top:1px solid var(--line)">
+                <td style="padding:10px 14px">${u.name}</td>
+                <td style="padding:10px 14px">${u.email}</td>
+                <td style="padding:10px 14px">${u.phone || '—'}</td>
+                <td style="padding:10px 14px"><span class="badge approved">${u.role}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+loadStats();
+loadSpas();
+</script>
+</body>
+</html>

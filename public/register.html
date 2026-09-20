@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Create account — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div class="wrap auth-wrap">
+  <div class="panel">
+    <h2>Create your account</h2>
+    <p class="helper-text" style="margin-bottom:14px">Choose how you'll use SpaBook.</p>
+    <div class="role-toggle">
+      <button type="button" class="active" data-role="customer" onclick="setRole('customer')">📅 I want to book</button>
+      <button type="button" data-role="owner" onclick="setRole('owner')">🏢 I own a spa</button>
+    </div>
+    <form id="registerForm" style="margin-top:16px">
+      <label>Full name</label>
+      <input id="name" required placeholder="Your name">
+      <label>Email</label>
+      <input type="email" id="email" required placeholder="you@example.com">
+      <label>Phone</label>
+      <input id="phone" required placeholder="10-digit mobile number">
+      <label>Password</label>
+      <input type="password" id="password" required minlength="6" placeholder="At least 6 characters">
+      <button class="btn gold block" style="margin-top:20px" type="submit">Create account</button>
+    </form>
+    <hr class="divider-line">
+    <p style="font-size:13.5px;color:var(--ink-soft)">
+      Already have an account? <a href="/login.html" style="color:var(--moss);font-weight:700">Log in</a>
+    </p>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav();
+let role = 'customer';
+function setRole(r) {
+  role = r;
+  document.querySelectorAll('.role-toggle button').forEach(b => b.classList.toggle('active', b.dataset.role === r));
+}
+
+document.getElementById('registerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('name').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  const password = document.getElementById('password').value;
+  try {
+    const { token, user } = await API.post('/auth/register', { name, email, phone, password, role });
+    API.saveSession(token, user);
+    toast('Account created! Welcome, ' + user.name.split(' ')[0]);
+    setTimeout(() => {
+      if (user.role === 'owner') window.location.href = '/owner/index.html';
+      else window.location.href = '/';
+    }, 400);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+</script>
+</body>
+</html>

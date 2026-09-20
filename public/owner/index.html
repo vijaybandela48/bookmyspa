@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Owner dashboard — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div class="wrap page-body">
+  <div class="eyebrow">Spa owner</div>
+  <h1 style="margin-top:4px">Owner dashboard</h1>
+
+  <div class="tabs" style="margin-top:24px">
+    <div class="tab active" data-tab="spas" onclick="switchTab('spas')">My spas</div>
+    <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">Bookings</div>
+  </div>
+
+  <div id="tab-spas">
+    <div class="two-col">
+      <div>
+        <div id="spaList"><p>Loading…</p></div>
+      </div>
+      <div>
+        <div class="panel">
+          <h3>List a new spa</h3>
+          <p class="helper-text" style="margin-bottom:12px">New spas are reviewed by an admin before they appear publicly.</p>
+          <form id="spaForm">
+            <label>Spa name</label>
+            <input id="s_name" required placeholder="e.g. Serene Bliss Spa">
+            <label>Description</label>
+            <textarea id="s_desc" rows="2" placeholder="What makes this spa special?"></textarea>
+            <label>City</label>
+            <input id="s_city" required placeholder="e.g. Hyderabad">
+            <label>Address</label>
+            <input id="s_address" placeholder="Street, area">
+            <label>Phone</label>
+            <input id="s_phone" placeholder="Contact number">
+            <div style="display:flex;gap:10px">
+              <div style="flex:1"><label>Opening time</label><input type="time" id="s_open" value="10:00"></div>
+              <div style="flex:1"><label>Closing time</label><input type="time" id="s_close" value="20:00"></div>
+            </div>
+            <label>Location</label>
+            <p class="helper-text" style="margin-top:-2px">Add coordinates so customers can find your spa under "Nearby." Easiest way: stand at the spa and tap the button below.</p>
+            <button type="button" class="btn small outline block" onclick="useCurrentLocation()" id="locateBtn">📍 Use my current location</button>
+            <div style="display:flex;gap:10px;margin-top:10px">
+              <div style="flex:1"><label>Latitude</label><input type="number" id="s_lat" step="0.000001" placeholder="e.g. 17.4156"></div>
+              <div style="flex:1"><label>Longitude</label><input type="number" id="s_lng" step="0.000001" placeholder="e.g. 78.4347"></div>
+            </div>
+            <p class="helper-text" id="locateStatus"></p>
+            <button class="btn gold block" style="margin-top:18px" type="submit">Submit spa</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div id="mediaManager" style="display:none;margin-top:24px" class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 id="mediaManagerTitle">Photos &amp; videos</h3>
+        <button class="btn small outline" onclick="closeMediaManager()">Close</button>
+      </div>
+      <p class="helper-text" style="margin:6px 0 14px">Add photos or short videos of your spa. The first photo you add becomes the cover shown on your listing — you can change it anytime. JPG/PNG/WEBP/GIF or MP4/WEBM/MOV, up to 15MB each, 12 files max.</p>
+      <div class="grid" id="mediaGrid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px"></div>
+      <hr class="divider-line">
+      <label>Upload a photo or video</label>
+      <input type="file" id="mediaFileInput" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime">
+      <p class="helper-text" id="uploadStatus"></p>
+    </div>
+
+    <div id="roomManager" style="display:none;margin-top:24px" class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 id="roomManagerTitle">Rooms &amp; capacity</h3>
+        <button class="btn small outline" onclick="closeRoomManager()">Close</button>
+      </div>
+      <p class="helper-text" style="margin:6px 0 14px">Define how many rooms of each type you have (e.g. 2 Jacuzzi rooms, 3 general therapy rooms). Then assign each service to a room type below — customers won't be able to overbook beyond your capacity.</p>
+      <div id="roomTypeList" style="margin-bottom:16px"></div>
+      <hr class="divider-line">
+      <h4>Add a room type</h4>
+      <form id="roomTypeForm">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+          <div style="flex:2;min-width:160px"><label>Room type name</label><input id="rt_name" required placeholder="e.g. Jacuzzi Room"></div>
+          <div style="flex:1;min-width:100px"><label>How many rooms</label><input id="rt_capacity" type="number" required min="1" value="1"></div>
+        </div>
+        <button class="btn outline block" style="margin-top:14px" type="submit">Add room type</button>
+      </form>
+    </div>
+
+    <div id="couponManager" style="display:none;margin-top:24px" class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 id="couponManagerTitle">Coupons</h3>
+        <button class="btn small outline" onclick="closeCouponManager()">Close</button>
+      </div>
+      <p class="helper-text" style="margin:6px 0 14px">Create promo codes customers can apply at checkout. You can restrict a coupon to a date range, a time window, or a single service.</p>
+      <div id="couponList" style="margin-bottom:16px"></div>
+      <hr class="divider-line">
+      <h4>Create a coupon</h4>
+      <form id="couponForm">
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px"><label>Coupon code</label><input id="cp_code" required placeholder="e.g. SUMMER20" style="text-transform:uppercase"></div>
+          <div style="flex:1;min-width:120px">
+            <label>Discount type</label>
+            <select id="cp_type">
+              <option value="percent">Percentage off</option>
+              <option value="flat">Flat amount off (₹)</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:100px"><label>Value</label><input id="cp_value" type="number" required min="1" placeholder="e.g. 20"></div>
+        </div>
+        <label>Applies to</label>
+        <select id="cp_service">
+          <option value="">All services at this spa</option>
+        </select>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px"><label>Valid from (optional)</label><input type="date" id="cp_from"></div>
+          <div style="flex:1;min-width:140px"><label>Valid to (optional)</label><input type="date" id="cp_to"></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:0;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px"><label>Start time (optional)</label><input type="time" id="cp_start_time"></div>
+          <div style="flex:1;min-width:140px"><label>End time (optional)</label><input type="time" id="cp_end_time"></div>
+        </div>
+        <label>Max redemptions (optional)</label>
+        <input type="number" id="cp_max_uses" min="1" placeholder="Leave blank for unlimited">
+        <button class="btn outline block" style="margin-top:14px" type="submit">Create coupon</button>
+      </form>
+    </div>
+
+    <div id="serviceManager" style="display:none;margin-top:24px" class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 id="serviceManagerTitle">Services</h3>
+        <button class="btn small outline" onclick="closeServiceManager()">Close</button>
+      </div>
+      <div id="serviceList" style="margin:10px 0"></div>
+      <hr class="divider-line">
+      <h4>Add a service</h4>
+      <form id="serviceForm">
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:2;min-width:180px"><label>Service name</label><input id="sv_name" required placeholder="e.g. Deep Tissue Massage"></div>
+          <div style="flex:1;min-width:100px"><label>Duration (mins)</label><input id="sv_duration" type="number" required value="60" min="15" step="15"></div>
+          <div style="flex:1;min-width:100px"><label>Price (₹)</label><input id="sv_price" type="number" required min="0"></div>
+        </div>
+        <label>Description</label>
+        <input id="sv_desc" placeholder="Short description">
+        <label>Room type (optional)</label>
+        <select id="sv_room_type">
+          <option value="">No room limit (single booking at a time)</option>
+        </select>
+        <p class="helper-text">Assign a room type to let multiple customers book this service at once, up to how many rooms you have. Set up room types under "Rooms &amp; capacity" first.</p>
+        <label>Discount % (optional)</label>
+        <input id="sv_discount" type="number" min="0" max="90" value="0" placeholder="e.g. 15">
+        <p class="helper-text">Customers will see the original price struck through with the discounted price.</p>
+        <button class="btn outline block" style="margin-top:14px" type="submit">Add service</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="tab-bookings" style="display:none">
+    <div id="ownerBookings"><p>Loading…</p></div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav('owner');
+if (!API.isLoggedIn() || API.user().role !== 'owner') window.location.href = '/login.html';
+
+let mySpas = [];
+let activeSpaId = null;
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('tab-spas').style.display = name === 'spas' ? 'block' : 'none';
+  document.getElementById('tab-bookings').style.display = name === 'bookings' ? 'block' : 'none';
+  if (name === 'bookings') loadOwnerBookings();
+}
+
+function statusBadge(s) {
+  const labels = { pending: 'Pending review', approved: 'Live', rejected: 'Rejected' };
+  return `<span class="badge ${s}">${labels[s]}</span>`;
+}
+
+async function editSpaLocation(spaId, currentLat, currentLng) {
+  if (!navigator.geolocation) {
+    const lat = prompt('Latitude:', currentLat || '');
+    const lng = prompt('Longitude:', currentLng || '');
+    if (lat === null || lng === null) return;
+    try {
+      await API.put(`/owner/spas/${spaId}`, { latitude: lat, longitude: lng });
+      toast('Location updated.');
+      loadSpas();
+    } catch (e) { toast(e.message, 'error'); }
+    return;
+  }
+  const useCurrentConfirmed = confirm('Use your current location for this spa? Click Cancel to enter coordinates manually instead.');
+  if (useCurrentConfirmed) {
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          await API.put(`/owner/spas/${spaId}`, { latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+          toast('Location updated!');
+          loadSpas();
+        } catch (e) { toast(e.message, 'error'); }
+      },
+      () => toast('Could not get your location. Try again or enter coordinates manually.', 'error'),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  } else {
+    const lat = prompt('Latitude:', currentLat || '');
+    if (lat === null) return;
+    const lng = prompt('Longitude:', currentLng || '');
+    if (lng === null) return;
+    try {
+      await API.put(`/owner/spas/${spaId}`, { latitude: lat, longitude: lng });
+      toast('Location updated.');
+      loadSpas();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+}
+
+async function loadSpas() {
+  const el = document.getElementById('spaList');
+  try {
+    const { spas } = await API.get('/owner/spas');
+    mySpas = spas;
+    if (!spas.length) {
+      el.innerHTML = `<div class="empty-state"><div class="big">🏢</div><p>You haven't listed a spa yet. Add one to get started.</p></div>`;
+      return;
+    }
+    el.innerHTML = spas.map(s => `
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
+          <div>
+            <h3 style="margin-bottom:4px">${s.cover_emoji} ${s.name}</h3>
+            <div class="helper-text">${s.city} ${s.address ? '· ' + s.address : ''}</div>
+          </div>
+          ${statusBadge(s.status)}
+        </div>
+        <p style="font-size:14px;color:var(--ink-soft);margin:10px 0">${s.description || ''}</p>
+        <p class="helper-text" style="margin-bottom:10px">
+          ${s.latitude && s.longitude
+            ? `📍 Location set · <a href="https://www.google.com/maps?q=${s.latitude},${s.longitude}" target="_blank" rel="noopener" style="color:var(--moss);font-weight:600">View on map</a>`
+            : `⚠️ No location set — this spa won't show up under "Nearby"`}
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn small outline" onclick="openServiceManager(${s.id})">Manage services</button>
+          <button class="btn small outline" onclick="openRoomManager(${s.id})">🛏️ Rooms &amp; capacity</button>
+          <button class="btn small outline" onclick="openCouponManager(${s.id})">🏷️ Coupons</button>
+          <button class="btn small outline" onclick="openMediaManager(${s.id})">📷 Photos &amp; videos</button>
+          <button class="btn small outline" onclick="editSpaLocation(${s.id}, ${s.latitude || 'null'}, ${s.longitude || 'null'})">📍 ${s.latitude ? 'Update' : 'Set'} location</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+document.getElementById('spaForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await API.post('/owner/spas', {
+      name: document.getElementById('s_name').value.trim(),
+      description: document.getElementById('s_desc').value.trim(),
+      city: document.getElementById('s_city').value.trim(),
+      address: document.getElementById('s_address').value.trim(),
+      phone: document.getElementById('s_phone').value.trim(),
+      opening_time: document.getElementById('s_open').value,
+      closing_time: document.getElementById('s_close').value,
+      latitude: document.getElementById('s_lat').value,
+      longitude: document.getElementById('s_lng').value,
+    });
+    toast('Spa submitted for review!');
+    e.target.reset();
+    document.getElementById('locateStatus').textContent = '';
+    loadSpas();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+function useCurrentLocation() {
+  const btn = document.getElementById('locateBtn');
+  const status = document.getElementById('locateStatus');
+  if (!navigator.geolocation) {
+    status.textContent = 'Your browser does not support location access. Enter coordinates manually.';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Locating…';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      document.getElementById('s_lat').value = pos.coords.latitude.toFixed(6);
+      document.getElementById('s_lng').value = pos.coords.longitude.toFixed(6);
+      status.textContent = 'Location captured!';
+      status.style.color = 'var(--moss)';
+      btn.disabled = false;
+      btn.textContent = '📍 Use my current location';
+    },
+    (err) => {
+      status.textContent = err.code === 1
+        ? 'Location permission denied. Enter coordinates manually, or allow location access and try again.'
+        : 'Could not get your location. Enter coordinates manually.';
+      status.style.color = 'var(--plum)';
+      btn.disabled = false;
+      btn.textContent = '📍 Use my current location';
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+let activeMediaSpaId = null;
+
+async function openMediaManager(spaId) {
+  activeMediaSpaId = spaId;
+  const spa = mySpas.find(s => s.id === spaId);
+  document.getElementById('mediaManager').style.display = 'block';
+  document.getElementById('mediaManagerTitle').textContent = 'Photos & videos — ' + spa.name;
+  document.getElementById('mediaManager').scrollIntoView({ behavior: 'smooth' });
+  document.getElementById('uploadStatus').textContent = '';
+  await loadMedia();
+}
+function closeMediaManager() {
+  document.getElementById('mediaManager').style.display = 'none';
+  activeMediaSpaId = null;
+}
+
+async function loadMedia() {
+  const grid = document.getElementById('mediaGrid');
+  grid.innerHTML = '<p class="helper-text">Loading…</p>';
+  try {
+    const { media } = await API.get(`/owner/spas/${activeMediaSpaId}/media`);
+    if (!media.length) {
+      grid.innerHTML = `<p class="helper-text" style="grid-column:1/-1">No photos or videos yet — add one below.</p>`;
+      return;
+    }
+    grid.innerHTML = media.map(m => `
+      <div style="border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;background:var(--white)">
+        <div style="position:relative">
+          ${m.type === 'image'
+            ? `<img src="${m.url}" style="width:100%;height:120px;object-fit:cover;display:block">`
+            : `<video src="${m.url}" style="width:100%;height:120px;object-fit:cover;display:block;background:#000" muted></video>`}
+          ${m.is_cover ? `<span class="badge approved" style="position:absolute;top:6px;left:6px">Cover</span>` : ''}
+        </div>
+        <div style="padding:8px;display:flex;gap:6px;flex-wrap:wrap">
+          ${m.type === 'image' && !m.is_cover ? `<button class="btn small outline" onclick="setCover(${m.id})">Set as cover</button>` : ''}
+          <button class="btn small outline" onclick="deleteMedia(${m.id})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    grid.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+document.getElementById('mediaFileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const status = document.getElementById('uploadStatus');
+  if (file.size > 15 * 1024 * 1024) {
+    status.textContent = 'File is too large — please keep it under 15MB.';
+    e.target.value = '';
+    return;
+  }
+  status.textContent = 'Uploading…';
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    await API.post(`/owner/spas/${activeMediaSpaId}/media`, { dataUrl });
+    status.textContent = 'Uploaded!';
+    e.target.value = '';
+    loadMedia();
+  } catch (err) {
+    status.textContent = err.message;
+  }
+});
+
+async function setCover(mediaId) {
+  try {
+    await API.put(`/owner/media/${mediaId}/cover`);
+    toast('Cover photo updated.');
+    loadMedia();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteMedia(mediaId) {
+  if (!confirm('Remove this photo/video?')) return;
+  try {
+    await API.del(`/owner/media/${mediaId}`);
+    toast('Removed.');
+    loadMedia();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+let activeRoomSpaId = null;
+
+async function openRoomManager(spaId) {
+  activeRoomSpaId = spaId;
+  const spa = mySpas.find(s => s.id === spaId);
+  document.getElementById('roomManager').style.display = 'block';
+  document.getElementById('roomManagerTitle').textContent = 'Rooms & capacity — ' + spa.name;
+  document.getElementById('roomManager').scrollIntoView({ behavior: 'smooth' });
+  await loadRoomTypes();
+}
+function closeRoomManager() {
+  document.getElementById('roomManager').style.display = 'none';
+  activeRoomSpaId = null;
+}
+
+async function loadRoomTypes() {
+  const el = document.getElementById('roomTypeList');
+  el.innerHTML = '<p class="helper-text">Loading…</p>';
+  try {
+    const { roomTypes } = await API.get(`/owner/spas/${activeRoomSpaId}/room-types`);
+    if (!roomTypes.length) {
+      el.innerHTML = `<p class="helper-text">No room types yet. Add one below — e.g. "Jacuzzi Room" with 2 rooms, or "Therapy Room" with 3 rooms.</p>`;
+      return;
+    }
+    el.innerHTML = roomTypes.map(rt => `
+      <div class="service-row">
+        <div>
+          <h4>${rt.name}</h4>
+          <div class="desc">${rt.capacity} room${rt.capacity !== 1 ? 's' : ''} available per time slot · ${rt.service_count} service${rt.service_count !== 1 ? 's' : ''} assigned</div>
+        </div>
+        <div style="text-align:right">
+          <button class="btn small outline" onclick="editRoomType(${rt.id}, '${rt.name.replace(/'/g, "\\'")}', ${rt.capacity})">Edit</button>
+          <button class="btn small outline" style="margin-top:8px" onclick="deleteRoomType(${rt.id})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+document.getElementById('roomTypeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await API.post(`/owner/spas/${activeRoomSpaId}/room-types`, {
+      name: document.getElementById('rt_name').value.trim(),
+      capacity: Number(document.getElementById('rt_capacity').value),
+    });
+    toast('Room type added!');
+    e.target.reset();
+    document.getElementById('rt_capacity').value = 1;
+    loadRoomTypes();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+async function editRoomType(id, currentName, currentCapacity) {
+  const name = prompt('Room type name:', currentName);
+  if (name === null) return;
+  const capacity = prompt('How many rooms of this type?', currentCapacity);
+  if (capacity === null) return;
+  const cap = Number(capacity);
+  if (!cap || cap < 1) { toast('Capacity must be at least 1.', 'error'); return; }
+  try {
+    await API.put(`/owner/room-types/${id}`, { name: name.trim(), capacity: cap });
+    toast('Room type updated.');
+    loadRoomTypes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteRoomType(id) {
+  if (!confirm('Delete this room type? Services using it will no longer have a room limit.')) return;
+  try {
+    await API.del(`/owner/room-types/${id}`);
+    toast('Room type deleted.');
+    loadRoomTypes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+let activeCouponSpaId = null;
+
+async function openCouponManager(spaId) {
+  activeCouponSpaId = spaId;
+  const spa = mySpas.find(s => s.id === spaId);
+  document.getElementById('couponManager').style.display = 'block';
+  document.getElementById('couponManagerTitle').textContent = 'Coupons — ' + spa.name;
+  document.getElementById('couponManager').scrollIntoView({ behavior: 'smooth' });
+  await populateCouponServiceDropdown();
+  await loadCoupons();
+}
+function closeCouponManager() {
+  document.getElementById('couponManager').style.display = 'none';
+  activeCouponSpaId = null;
+}
+
+async function populateCouponServiceDropdown() {
+  const sel = document.getElementById('cp_service');
+  sel.innerHTML = `<option value="">All services at this spa</option>`;
+  try {
+    const { services } = await API.get(`/owner/spas/${activeCouponSpaId}/services`);
+    services.filter(s => s.active).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id; opt.textContent = s.name;
+      sel.appendChild(opt);
+    });
+  } catch (e) {}
+}
+
+function couponSummary(c) {
+  const bits = [];
+  if (c.valid_from) bits.push(`from ${c.valid_from}`);
+  if (c.valid_to) bits.push(`until ${c.valid_to}`);
+  if (c.start_time) bits.push(`after ${formatTime(c.start_time)}`);
+  if (c.end_time) bits.push(`before ${formatTime(c.end_time)}`);
+  if (c.service_name) bits.push(`only on ${c.service_name}`);
+  if (c.max_uses) bits.push(`${c.used_count}/${c.max_uses} used`);
+  else bits.push(`${c.used_count} used`);
+  return bits.join(' · ') || 'No restrictions';
+}
+
+async function loadCoupons() {
+  const el = document.getElementById('couponList');
+  el.innerHTML = '<p class="helper-text">Loading…</p>';
+  try {
+    const { coupons } = await API.get(`/owner/spas/${activeCouponSpaId}/coupons`);
+    if (!coupons.length) {
+      el.innerHTML = `<p class="helper-text">No coupons yet — create one below.</p>`;
+      return;
+    }
+    el.innerHTML = coupons.map(c => `
+      <div class="service-row">
+        <div>
+          <h4 class="mono">${c.code} ${c.active ? '' : '<span class="badge cancelled">Disabled</span>'}</h4>
+          <div class="desc">${c.discount_type === 'percent' ? c.discount_value + '% off' : money(c.discount_value) + ' off'}</div>
+          <div class="dur">${couponSummary(c)}</div>
+        </div>
+        <div style="text-align:right">
+          <button class="btn small outline" onclick="toggleCoupon(${c.id}, ${c.active ? 0 : 1})">${c.active ? 'Disable' : 'Enable'}</button>
+          <button class="btn small outline" style="margin-top:8px" onclick="deleteCoupon(${c.id})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+document.getElementById('couponForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await API.post(`/owner/spas/${activeCouponSpaId}/coupons`, {
+      code: document.getElementById('cp_code').value.trim().toUpperCase(),
+      discount_type: document.getElementById('cp_type').value,
+      discount_value: Number(document.getElementById('cp_value').value),
+      service_id: document.getElementById('cp_service').value || null,
+      valid_from: document.getElementById('cp_from').value || null,
+      valid_to: document.getElementById('cp_to').value || null,
+      start_time: document.getElementById('cp_start_time').value || null,
+      end_time: document.getElementById('cp_end_time').value || null,
+      max_uses: document.getElementById('cp_max_uses').value || null,
+    });
+    toast('Coupon created!');
+    e.target.reset();
+    loadCoupons();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+async function toggleCoupon(id, active) {
+  try {
+    await API.put(`/owner/coupons/${id}`, { active });
+    toast(active ? 'Coupon enabled.' : 'Coupon disabled.');
+    loadCoupons();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteCoupon(id) {
+  if (!confirm('Delete this coupon permanently?')) return;
+  try {
+    await API.del(`/owner/coupons/${id}`);
+    toast('Coupon deleted.');
+    loadCoupons();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function openServiceManager(spaId) {
+  activeSpaId = spaId;
+  const spa = mySpas.find(s => s.id === spaId);
+  document.getElementById('serviceManager').style.display = 'block';
+  document.getElementById('serviceManagerTitle').textContent = 'Services — ' + spa.name;
+  document.getElementById('serviceManager').scrollIntoView({ behavior: 'smooth' });
+  await populateServiceRoomTypeDropdown();
+  await loadServices();
+}
+function closeServiceManager() {
+  document.getElementById('serviceManager').style.display = 'none';
+  activeSpaId = null;
+}
+
+async function populateServiceRoomTypeDropdown() {
+  const sel = document.getElementById('sv_room_type');
+  sel.innerHTML = `<option value="">No room limit (single booking at a time)</option>`;
+  try {
+    const { roomTypes } = await API.get(`/owner/spas/${activeSpaId}/room-types`);
+    roomTypes.forEach(rt => {
+      const opt = document.createElement('option');
+      opt.value = rt.id; opt.textContent = `${rt.name} (${rt.capacity} rooms)`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {}
+}
+
+async function loadServices() {
+  const el = document.getElementById('serviceList');
+  el.innerHTML = '<p class="helper-text">Loading…</p>';
+  try {
+    const { services } = await API.get(`/owner/spas/${activeSpaId}/services`);
+    if (!services.length) {
+      el.innerHTML = `<p class="helper-text">No services yet — add one below.</p>`;
+      return;
+    }
+    el.innerHTML = services.map(sv => `
+      <div class="service-row">
+        <div>
+          <h4>${sv.name} ${sv.active ? '' : '<span class="badge cancelled">Removed</span>'} ${sv.discount_percent > 0 ? `<span class="badge pending">${sv.discount_percent}% OFF</span>` : ''}</h4>
+          <div class="desc">${sv.description || ''}</div>
+          <div class="dur">${sv.duration_minutes} mins ${sv.room_type_name ? `· 🛏️ ${sv.room_type_name} (${sv.room_type_capacity} rooms)` : '· single booking'}</div>
+        </div>
+        <div style="text-align:right">
+          ${sv.discount_percent > 0
+            ? `<div style="font-size:12px;color:var(--ink-soft);text-decoration:line-through">${money(sv.price)}</div><div class="price">${money(sv.final_price)}</div>`
+            : `<div class="price">${money(sv.price)}</div>`}
+          ${sv.active ? `
+            <button class="btn small outline" style="margin-top:8px" onclick="editDiscount(${sv.id}, ${sv.discount_percent})">${sv.discount_percent > 0 ? 'Edit discount' : 'Add discount'}</button>
+            <button class="btn small outline" style="margin-top:8px" onclick="removeService(${sv.id})">Remove</button>
+          ` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+document.getElementById('serviceForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await API.post(`/owner/spas/${activeSpaId}/services`, {
+      name: document.getElementById('sv_name').value.trim(),
+      description: document.getElementById('sv_desc').value.trim(),
+      duration_minutes: Number(document.getElementById('sv_duration').value),
+      price: Number(document.getElementById('sv_price').value),
+      discount_percent: Number(document.getElementById('sv_discount').value) || 0,
+      room_type_id: document.getElementById('sv_room_type').value || null,
+    });
+    toast('Service added!');
+    e.target.reset();
+    document.getElementById('sv_duration').value = 60;
+    document.getElementById('sv_discount').value = 0;
+    loadServices();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+async function editDiscount(serviceId, currentPercent) {
+  const input = prompt('Discount percentage (0–90). Set to 0 to remove a discount.', currentPercent || 0);
+  if (input === null) return;
+  const pct = Number(input);
+  if (isNaN(pct) || pct < 0 || pct > 90) { toast('Enter a number between 0 and 90.', 'error'); return; }
+  try {
+    await API.put(`/owner/services/${serviceId}`, { discount_percent: pct });
+    toast(pct > 0 ? `Discount set to ${pct}%.` : 'Discount removed.');
+    loadServices();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function removeService(id) {
+  if (!confirm('Remove this service from your listing?')) return;
+  try {
+    await API.del(`/owner/services/${id}`);
+    toast('Service removed.');
+    loadServices();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
+
+async function loadOwnerBookings() {
+  const el = document.getElementById('ownerBookings');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { bookings } = await API.get('/owner/bookings');
+    if (!bookings.length) {
+      el.innerHTML = `<div class="empty-state"><div class="big">📭</div><p>No bookings yet.</p></div>`;
+      return;
+    }
+    el.innerHTML = bookings.map(b => `
+      <div class="ticket">
+        <div class="stub">
+          <div class="d">${new Date(b.booking_date+'T00:00:00').getDate()}</div>
+          <div class="m">${new Date(b.booking_date+'T00:00:00').toLocaleDateString('en-IN',{month:'short'})}</div>
+          <div class="perforation"></div>
+        </div>
+        <div class="content">
+          <div class="row1">
+            <div>
+              <h4>${b.service_name}</h4>
+              <div class="sub">${b.customer_name} · ${b.customer_phone || 'no phone'} · ${b.spa_name}</div>
+            </div>
+            <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} (-${money(b.coupon_discount)})</div>` : ''}</div>
+          </div>
+          <div class="foot-row">
+            <span class="badge ${b.status}">${statusLabel[b.status]}</span>
+            <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
+            ${b.status === 'confirmed' ? `<button class="btn small gold" onclick="setBookingStatus(${b.id},'completed')">Mark completed</button>` : ''}
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    el.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+async function setBookingStatus(id, status) {
+  try {
+    await API.put(`/owner/bookings/${id}/status`, { status });
+    toast('Booking updated.');
+    loadOwnerBookings();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+loadSpas();
+</script>
+</body>
+</html>

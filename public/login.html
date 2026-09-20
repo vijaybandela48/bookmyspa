@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log in — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div class="wrap auth-wrap">
+  <div class="panel">
+    <h2>Welcome back</h2>
+    <p class="helper-text" style="margin-bottom:16px">Log in to book a slot, manage your spa, or access the admin panel.</p>
+    <form id="loginForm">
+      <label>Email</label>
+      <input type="email" id="email" required placeholder="you@example.com">
+      <label>Password</label>
+      <input type="password" id="password" required placeholder="••••••••">
+      <button class="btn gold block" style="margin-top:20px" type="submit">Log in</button>
+    </form>
+    <hr class="divider-line">
+    <p style="font-size:13.5px;color:var(--ink-soft)">
+      New here? <a href="/register.html" style="color:var(--moss);font-weight:700">Create an account</a>
+    </p>
+    <hr class="divider-line">
+    <p style="font-size:12.5px;color:var(--ink-soft);line-height:1.7">
+      <strong>Demo logins</strong><br>
+      Customer: customer@spabook.demo / customer123<br>
+      Spa owner: owner1@spabook.demo / owner123<br>
+      Admin: admin@spabook.demo / admin123
+    </p>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav();
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  try {
+    const { token, user } = await API.post('/auth/login', { email, password });
+    API.saveSession(token, user);
+    toast('Welcome back, ' + user.name.split(' ')[0] + '!');
+    setTimeout(() => {
+      if (user.role === 'owner') window.location.href = '/owner/index.html';
+      else if (user.role === 'admin') window.location.href = '/admin/index.html';
+      else window.location.href = '/';
+    }, 400);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+</script>
+</body>
+</html>

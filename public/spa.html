@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spa details — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap page-body">
+  <div id="spaHeader"><p>Loading…</p></div>
+  <div id="mediaGallery" style="display:none;margin-top:20px"></div>
+
+  <div class="two-col" id="mainContent" style="display:none;margin-top:26px">
+    <div>
+      <div class="panel">
+        <h3 style="margin-bottom:14px">Services</h3>
+        <div id="servicesList"></div>
+      </div>
+    </div>
+    <div>
+      <div class="panel" id="bookingPanel">
+        <h3>Book a slot</h3>
+        <p class="helper-text" id="bookingHint">Select a service to see available times.</p>
+        <div id="bookingBody"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Payment modal -->
+<div class="modal-overlay" id="payModal">
+  <div class="modal">
+    <h3>Confirm &amp; pay</h3>
+    <div id="payModalBody"></div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav();
+const spaId = new URLSearchParams(window.location.search).get('id');
+let spaData = null, servicesData = [];
+let selectedServiceId = null, selectedDate = null, selectedSlot = null;
+let appliedCoupon = null;
+
+function todayISO() { return new Date().toISOString().slice(0,10); }
+function dateOptions() {
+  const opts = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    opts.push(d.toISOString().slice(0,10));
+  }
+  return opts;
+}
+
+async function loadSpa() {
+  try {
+    const { spa, services, media } = await API.get('/spas/' + spaId);
+    spaData = spa; servicesData = services;
+    document.getElementById('spaHeader').innerHTML = `
+      <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+        <div style="width:76px;height:76px;border-radius:16px;background:linear-gradient(135deg,var(--moss-soft),var(--moss));display:flex;align-items:center;justify-content:center;font-size:36px;flex-shrink:0;overflow:hidden">
+          ${spa.cover_image_url ? `<img src="${spa.cover_image_url}" style="width:100%;height:100%;object-fit:cover">` : spa.cover_emoji}
+        </div>
+        <div>
+          <div class="eyebrow">📍 ${spa.city}</div>
+          <h1 style="font-size:30px;margin:4px 0">${spa.name}</h1>
+          <p style="color:var(--ink-soft);margin:0 0 4px">${spa.description || ''}</p>
+          <p style="font-size:13.5px;color:var(--ink-soft)">${spa.address || ''} · Open ${formatTime(spa.opening_time)} – ${formatTime(spa.closing_time)} · <span class="rating">★ ${spa.rating}</span></p>
+        </div>
+      </div>
+    `;
+    renderGallery(media || []);
+    renderServices();
+    document.getElementById('mainContent').style.display = 'grid';
+  } catch (e) {
+    document.getElementById('spaHeader').innerHTML = `<div class="empty-state"><div class="big">🙁</div><p>${e.message}</p></div>`;
+  }
+}
+
+function renderGallery(media) {
+  const el = document.getElementById('mediaGallery');
+  if (!media.length) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:6px">
+      ${media.map(m => m.type === 'image'
+        ? `<img src="${m.url}" style="height:160px;width:220px;object-fit:cover;border-radius:var(--radius-sm);flex-shrink:0;border:1px solid var(--line)">`
+        : `<video src="${m.url}" controls style="height:160px;width:220px;object-fit:cover;border-radius:var(--radius-sm);flex-shrink:0;border:1px solid var(--line);background:#000"></video>`
+      ).join('')}
+    </div>
+  `;
+}
+
+function renderServices() {
+  const el = document.getElementById('servicesList');
+  if (!servicesData.length) {
+    el.innerHTML = `<p class="helper-text">This spa hasn't listed any services yet.</p>`;
+    return;
+  }
+  el.innerHTML = servicesData.map(s => `
+    <div class="service-row">
+      <div>
+        <h4>${s.name} ${s.discount_percent > 0 ? `<span class="badge pending" style="margin-left:4px">${s.discount_percent}% OFF</span>` : ''}</h4>
+        <div class="desc">${s.description || ''}</div>
+        <div class="dur">${s.duration_minutes} mins</div>
+      </div>
+      <div style="text-align:right">
+        ${s.discount_percent > 0
+          ? `<div style="font-size:12.5px;color:var(--ink-soft);text-decoration:line-through">${money(s.price)}</div><div class="price">${money(s.final_price)}</div>`
+          : `<div class="price">${money(s.price)}</div>`}
+        <button class="btn small ${selectedServiceId===s.id ? '' : 'outline'}" style="margin-top:8px" onclick="selectService(${s.id})">
+          ${selectedServiceId===s.id ? 'Selected' : 'Select'}
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function selectService(id) {
+  selectedServiceId = id;
+  selectedSlot = null;
+  renderServices();
+  renderBookingPanel();
+}
+
+function renderBookingPanel() {
+  const hint = document.getElementById('bookingHint');
+  const body = document.getElementById('bookingBody');
+  if (!selectedServiceId) {
+    hint.style.display = 'block';
+    body.innerHTML = '';
+    return;
+  }
+  hint.style.display = 'none';
+  const service = servicesData.find(s => s.id === selectedServiceId);
+  if (!selectedDate) selectedDate = todayISO();
+
+  const priceLine = service.discount_percent > 0
+    ? `<span style="text-decoration:line-through;color:var(--ink-soft)">${money(service.price)}</span> <strong>${money(service.final_price)}</strong>`
+    : `${money(service.price)}`;
+  body.innerHTML = `
+    <p style="font-size:13.5px;margin-bottom:10px"><strong>${service.name}</strong> · ${priceLine} · ${service.duration_minutes} mins</p>
+    <label>Choose a date</label>
+    <select id="dateSelect">
+      ${dateOptions().map(d => `<option value="${d}" ${d===selectedDate?'selected':''}>${formatDate(d)}</option>`).join('')}
+    </select>
+    <label>Available times</label>
+    <div class="slot-grid" id="slotGrid"><p class="helper-text">Loading times…</p></div>
+    <button class="btn gold block" id="bookBtn" disabled onclick="openPayModal()">Select a time slot</button>
+  `;
+  document.getElementById('dateSelect').addEventListener('change', (e) => {
+    selectedDate = e.target.value; selectedSlot = null; loadSlots();
+  });
+  loadSlots();
+}
+
+async function loadSlots() {
+  const grid = document.getElementById('slotGrid');
+  grid.innerHTML = '<p class="helper-text">Loading times…</p>';
+  try {
+    const { slots } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}`);
+    if (!slots.length) {
+      grid.innerHTML = `<p class="helper-text">No slots available this day.</p>`;
+      return;
+    }
+    grid.innerHTML = slots.map(s => `
+      <div class="slot ${s.available ? 'available' : 'unavailable'} ${selectedSlot===s.start_time ? 'selected' : ''}"
+           ${s.available ? `onclick="pickSlot('${s.start_time}')"` : ''}
+           title="${s.available ? (s.capacity > 1 ? s.spots_left + ' of ' + s.capacity + ' rooms free' : 'Available') : 'Fully booked'}">
+        ${formatTime(s.start_time)}
+        ${s.capacity > 1 ? `<div style="font-size:10px;font-weight:600;opacity:0.75;margin-top:2px">${s.available ? s.spots_left + ' left' : 'Full'}</div>` : ''}
+      </div>
+    `).join('');
+  } catch (e) {
+    grid.innerHTML = `<p class="helper-text">${e.message}</p>`;
+  }
+}
+
+function pickSlot(start) {
+  selectedSlot = start;
+  loadSlots();
+  const btn = document.getElementById('bookBtn');
+  btn.disabled = false;
+  btn.textContent = 'Book ' + formatTime(start);
+}
+
+function openPayModal() {
+  if (!API.isLoggedIn()) {
+    toast('Please log in as a customer to book.', 'error');
+    setTimeout(() => window.location.href = '/login.html', 700);
+    return;
+  }
+  const user = API.user();
+  if (user.role !== 'customer') {
+    toast('Only customer accounts can book slots.', 'error');
+    return;
+  }
+  appliedCoupon = null;
+  const service = servicesData.find(s => s.id === selectedServiceId);
+  const modal = document.getElementById('payModal');
+  document.getElementById('payModalBody').innerHTML = `
+    <p style="color:var(--ink-soft);font-size:14px;margin-bottom:14px">${spaData.name} · ${service.name}</p>
+    <p style="font-size:14px"><strong>${formatDate(selectedDate)}</strong> at <strong>${formatTime(selectedSlot)}</strong></p>
+    <div id="priceDisplay"></div>
+    <label>Have a coupon code?</label>
+    <div style="display:flex;gap:8px">
+      <input id="couponInput" placeholder="e.g. WELCOME20" style="text-transform:uppercase">
+      <button type="button" class="btn small outline" style="white-space:nowrap" onclick="applyCouponCode()">Apply</button>
+    </div>
+    <p class="helper-text" id="couponMsg"></p>
+    <label style="margin-top:16px">Payment method (simulated)</label>
+    <select id="payMethod">
+      <option value="card">Credit / Debit Card</option>
+      <option value="upi">UPI</option>
+      <option value="netbanking">Net Banking</option>
+    </select>
+    <label>Send booking confirmation via</label>
+    <select id="notifyChannel">
+      <option value="email">✉️ Email (${user.email})</option>
+      <option value="sms">💬 SMS (${user.phone || 'no phone on file'})</option>
+      <option value="whatsapp">🟢 WhatsApp (${user.phone || 'no phone on file'})</option>
+    </select>
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn outline block" onclick="closePayModal()">Cancel</button>
+      <button class="btn gold block" id="confirmPayBtn" onclick="confirmBooking()">Pay &amp; confirm</button>
+    </div>
+    <p class="helper-text" style="margin-top:12px">This is a simulated payment gateway for demo purposes. No real money is charged. Confirmation delivery is also simulated in this demo — the message content is real, but nothing is actually sent.</p>
+  `;
+  renderPriceDisplay(service);
+  modal.classList.add('open');
+}
+
+function renderPriceDisplay(service) {
+  const el = document.getElementById('priceDisplay');
+  const baseHadDiscount = service.discount_percent > 0;
+  if (appliedCoupon && appliedCoupon.valid) {
+    el.innerHTML = `
+      ${baseHadDiscount ? `<p style="font-size:13px;color:var(--ink-soft);text-decoration:line-through;margin:10px 0 0">${money(service.price)}</p>` : ''}
+      <p style="font-size:15px;color:var(--ink-soft);text-decoration:line-through;margin:2px 0 0">${money(appliedCoupon.original_amount)}</p>
+      <p class="mono" style="font-size:22px;font-weight:700;color:var(--moss-deep);margin:2px 0 4px">${money(appliedCoupon.final_amount)}</p>
+      <p style="font-size:12.5px;color:var(--gold);font-weight:600;margin:0 0 14px">🏷️ Coupon applied — you saved ${money(appliedCoupon.discount_amount)}</p>
+    `;
+  } else {
+    el.innerHTML = `
+      ${baseHadDiscount ? `<p style="font-size:13px;color:var(--ink-soft);text-decoration:line-through;margin:10px 0 0">${money(service.price)}</p>` : ''}
+      <p class="mono" style="font-size:22px;font-weight:700;color:var(--moss-deep);margin:${baseHadDiscount ? '2px' : '10px'} 0 18px">${money(service.final_price)}${baseHadDiscount ? ` <span style="font-size:13px;font-weight:600;color:var(--gold)">(${service.discount_percent}% off)</span>` : ''}</p>
+    `;
+  }
+}
+
+async function applyCouponCode() {
+  const code = document.getElementById('couponInput').value.trim();
+  const msg = document.getElementById('couponMsg');
+  const service = servicesData.find(s => s.id === selectedServiceId);
+  if (!code) { msg.textContent = 'Enter a coupon code first.'; msg.style.color = 'var(--plum)'; return; }
+  msg.textContent = 'Checking…'; msg.style.color = '';
+  try {
+    const params = new URLSearchParams({ code, serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot });
+    const result = await API.get(`/spas/${spaId}/coupons/validate?${params}`);
+    if (result.valid) {
+      appliedCoupon = { ...result, code };
+      msg.textContent = `Coupon "${code.toUpperCase()}" applied!`;
+      msg.style.color = 'var(--moss)';
+    } else {
+      appliedCoupon = null;
+      msg.textContent = result.error;
+      msg.style.color = 'var(--plum)';
+    }
+    renderPriceDisplay(service);
+  } catch (e) {
+    appliedCoupon = null;
+    msg.textContent = e.message;
+    msg.style.color = 'var(--plum)';
+    renderPriceDisplay(service);
+  }
+}
+
+function closePayModal() { document.getElementById('payModal').classList.remove('open'); }
+
+async function confirmBooking() {
+  const btn = document.getElementById('confirmPayBtn');
+  btn.disabled = true; btn.textContent = 'Processing…';
+  try {
+    const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot };
+    if (appliedCoupon && appliedCoupon.valid) bookingBody.couponCode = appliedCoupon.code;
+    const { booking } = await API.post('/bookings', bookingBody);
+
+    const order = await API.post(`/bookings/${booking.id}/checkout`);
+    const notifyChannel = document.getElementById('notifyChannel').value;
+
+    if (order.mode === 'razorpay') {
+      await loadRazorpayScript();
+      btn.textContent = 'Waiting for payment…';
+      const rzp = new Razorpay({
+        key: order.keyId,
+        order_id: order.orderId,
+        amount: order.amountPaise,
+        currency: order.currency,
+        name: 'SpaBook',
+        description: spaData.name,
+        prefill: order.prefill,
+        theme: { color: '#23392C' },
+        handler: async function (response) {
+          await finishVerification(booking.id, {
+            mode: 'razorpay',
+            orderId: response.razorpay_order_id,
+            paymentId: response.razorpay_payment_id,
+            signature: response.razorpay_signature,
+            notifyChannel,
+          });
+        },
+        modal: {
+          ondismiss: function () {
+            btn.disabled = false; btn.textContent = 'Pay & confirm';
+            toast('Payment cancelled.', 'error');
+          },
+        },
+      });
+      rzp.open();
+    } else {
+      // Mock mode: simulate the checkout instantly, no real popup.
+      await finishVerification(booking.id, {
+        mode: 'mock',
+        orderId: order.orderId,
+        paymentId: 'mock_pay_' + Math.random().toString(36).slice(2),
+        signature: 'mock',
+        method: document.getElementById('payMethod').value,
+        notifyChannel,
+      });
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = 'Pay & confirm';
+  }
+}
+
+async function finishVerification(bookingId, payload) {
+  const btn = document.getElementById('confirmPayBtn');
+  try {
+    const result = await API.post(`/bookings/${bookingId}/verify`, payload);
+    if (result.success) {
+      const channelLabel = { email: 'email', sms: 'SMS', whatsapp: 'WhatsApp' }[payload.notifyChannel];
+      toast(`Payment successful! Confirmation sent via ${channelLabel}.`);
+      closePayModal();
+      setTimeout(() => window.location.href = '/account.html', 900);
+    } else {
+      toast(result.message, 'error');
+      btn.disabled = false; btn.textContent = 'Try again';
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = 'Pay & confirm';
+  }
+}
+
+let razorpayScriptPromise = null;
+function loadRazorpayScript() {
+  if (window.Razorpay) return Promise.resolve();
+  if (razorpayScriptPromise) return razorpayScriptPromise;
+  razorpayScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Could not load the payment form. Check your connection and try again.'));
+    document.head.appendChild(script);
+  });
+  return razorpayScriptPromise;
+}
+
+loadSpa();
+</script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpaBook — Book massage &amp; spa appointments</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Book a massage or spa slot in seconds.</h1>
+    <p class="sub">Browse trusted spas near you, pick a service and time, pay online, and walk straight in — no calls, no waiting.</p>
+    <div class="search-bar">
+      <input id="searchInput" placeholder="Search spas or treatments..." />
+      <select id="cityInput"><option value="">All cities</option></select>
+      <button onclick="doSearch()">Search</button>
+    </div>
+  </div>
+</section>
+<svg class="steam-divider" viewBox="0 0 1200 40" preserveAspectRatio="none">
+  <path d="M0,20 C150,0 300,40 450,20 C600,0 750,40 900,20 C1050,0 1150,30 1200,18 L1200,40 L0,40 Z"></path>
+</svg>
+
+<div class="wrap page-body">
+  <div class="section-title-row">
+    <div>
+      <div class="eyebrow" id="resultsEyebrow">Featured</div>
+      <h2 style="margin-top:4px">Spas open for booking</h2>
+    </div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-sort="featured" onclick="setSortMode('featured')">Featured</div>
+    <div class="tab" data-sort="rating" onclick="setSortMode('rating')">Top rated</div>
+    <div class="tab" data-sort="nearby" onclick="setSortMode('nearby')">📍 Nearby</div>
+  </div>
+  <p class="helper-text" id="locationHint" style="display:none;margin:-10px 0 16px"></p>
+  <div class="grid" id="spaGrid"><p>Loading spas…</p></div>
+</div>
+
+<footer>SpaBook demo platform — built with a self-contained Node.js backend.</footer>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav('home');
+
+async function loadCities() {
+  try {
+    const { cities } = await API.get('/spas/cities');
+    const sel = document.getElementById('cityInput');
+    cities.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c;
+      sel.appendChild(opt);
+    });
+  } catch (e) {}
+}
+
+function spaCard(spa) {
+  const coverInner = spa.cover_image_url
+    ? `<img src="${spa.cover_image_url}" alt="${spa.name}" style="width:100%;height:100%;object-fit:cover">`
+    : spa.cover_emoji;
+  return `
+    <a class="spa-card" href="/spa.html?id=${spa.id}">
+      <div class="cover" style="${spa.cover_image_url ? 'padding:0' : ''}">${coverInner}</div>
+      <div class="body">
+        <h3>${spa.name}</h3>
+        <div class="meta">📍 ${spa.city}${spa.address ? ' · ' + spa.address : ''}${spa.distance_km !== null && spa.distance_km !== undefined ? ` · <strong style="color:var(--moss)">${spa.distance_km} km away</strong>` : ''}</div>
+        <div class="desc">${spa.description || ''}</div>
+        <div class="foot">
+          <span class="rating">★ ${spa.rating}</span>
+          <span class="btn small outline">View services</span>
+        </div>
+      </div>
+    </a>
+  `;
+}
+
+let sortMode = 'featured';
+let userLocation = null; // { lat, lng }
+
+async function loadSpas(city = '', search = '') {
+  const grid = document.getElementById('spaGrid');
+  grid.innerHTML = '<p>Loading spas…</p>';
+  try {
+    const params = new URLSearchParams();
+    if (city) params.set('city', city);
+    if (search) params.set('search', search);
+    params.set('sort', sortMode);
+    if (userLocation) {
+      params.set('lat', userLocation.lat);
+      params.set('lng', userLocation.lng);
+    }
+    const { spas } = await API.get('/spas?' + params.toString());
+    if (!spas.length) {
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">🧴</div><p>No spas found. Try a different search.</p></div>`;
+      return;
+    }
+    grid.innerHTML = spas.map(spaCard).join('');
+  } catch (e) {
+    grid.innerHTML = `<p>Could not load spas: ${e.message}</p>`;
+  }
+}
+
+function setSortMode(mode) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === mode));
+  const hint = document.getElementById('locationHint');
+
+  if (mode === 'nearby' && !userLocation) {
+    if (!navigator.geolocation) {
+      hint.style.display = 'block';
+      hint.textContent = "Your browser doesn't support location access — showing featured spas instead.";
+      hint.style.color = 'var(--plum)';
+      sortMode = 'featured';
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === 'featured'));
+      loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
+      return;
+    }
+    hint.style.display = 'block';
+    hint.textContent = '📍 Requesting your location…';
+    hint.style.color = '';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        hint.style.display = 'none';
+        sortMode = 'nearby';
+        document.getElementById('resultsEyebrow').textContent = 'Nearby';
+        loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
+      },
+      (err) => {
+        hint.textContent = err.code === 1
+          ? "Location permission denied — showing featured spas instead. You can allow location access and try again anytime."
+          : "Couldn't get your location — showing featured spas instead.";
+        hint.style.color = 'var(--plum)';
+        sortMode = 'featured';
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === 'featured'));
+        loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+    return;
+  }
+
+  sortMode = mode;
+  document.getElementById('resultsEyebrow').textContent = mode === 'nearby' ? 'Nearby' : mode === 'rating' ? 'Top rated' : 'Featured';
+  loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
+}
+
+function doSearch() {
+  const search = document.getElementById('searchInput').value.trim();
+  const city = document.getElementById('cityInput').value;
+  if (search || city) document.getElementById('resultsEyebrow').textContent = 'Search results';
+  loadSpas(city, search);
+}
+document.getElementById('searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+document.getElementById('cityInput').addEventListener('change', doSearch);
+
+loadCities();
+loadSpas();
+</script>
+</body>
+</html>

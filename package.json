@@ -1,0 +1,12 @@
+{
+  "name": "spa-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Spa & massage booking platform — Node.js built-ins only, no dependencies.",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

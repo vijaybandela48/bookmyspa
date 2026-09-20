@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My bookings — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div class="wrap page-body">
+  <div class="eyebrow">Your account</div>
+  <h1 style="margin-top:4px">My bookings</h1>
+  <div id="list" style="margin-top:20px"><p>Loading…</p></div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav('account');
+
+if (!API.isLoggedIn() || API.user().role !== 'customer') {
+  window.location.href = '/login.html';
+}
+
+const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
+
+async function load() {
+  const list = document.getElementById('list');
+  try {
+    const { bookings } = await API.get('/bookings/me');
+    if (!bookings.length) {
+      list.innerHTML = `<div class="empty-state"><div class="big">🗓️</div><p>No bookings yet.</p><a class="btn gold" href="/">Browse spas</a></div>`;
+      return;
+    }
+    list.innerHTML = bookings.map(b => {
+      const d = new Date(b.booking_date + 'T00:00:00');
+      const canCancel = ['pending_payment', 'confirmed'].includes(b.status);
+      return `
+      <div class="ticket">
+        <div class="stub">
+          <div class="d">${d.getDate()}</div>
+          <div class="m">${d.toLocaleDateString('en-IN', { month: 'short' })}</div>
+          <div class="perforation"></div>
+        </div>
+        <div class="content">
+          <div class="row1">
+            <div>
+              <h4>${b.service_name}</h4>
+              <div class="sub">${b.spa_name} · ${b.spa_city}</div>
+            </div>
+            <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} applied</div>` : ''}</div>
+          </div>
+          <div class="foot-row">
+            <span class="badge ${b.status}">${statusLabel[b.status]}</span>
+            <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
+            ${b.status === 'confirmed' && b.notify_channel ? `<span class="helper-text" style="margin:0">${{email:'✉️ Email',sms:'💬 SMS',whatsapp:'🟢 WhatsApp'}[b.notify_channel]} sent</span>` : ''}
+            ${b.status === 'pending_payment' ? `<a class="btn small gold" href="/spa.html?id=${b.spa_id}">Pay now</a>` : ''}
+            ${canCancel ? `<button class="btn small outline" onclick="cancelBooking(${b.id})">Cancel</button>` : ''}
+          </div>
+        </div>
+      </div>
+      `;
+    }).join('');
+  } catch (e) {
+    list.innerHTML = `<p>${e.message}</p>`;
+  }
+}
+
+async function cancelBooking(id) {
+  if (!confirm('Cancel this booking?')) return;
+  try {
+    const r = await API.put(`/bookings/${id}/cancel`);
+    toast(r.message);
+    load();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+load();
+</script>
+</body>
+</html>

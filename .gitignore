@@ -1,0 +1,12 @@
+node_modules/
+.env
+.DS_Store
+*.log
+
+# Runtime data — the app creates these automatically on first boot.
+# Never commit real customer data or uploaded photos/videos to git.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/uploads/spas/*
+!data/uploads/spas/.gitkeep
