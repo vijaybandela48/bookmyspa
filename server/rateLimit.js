@@ -16,7 +16,14 @@ function getClientKey(req) {
 
 // Returns true if the request is allowed, false if it should be rejected (429).
 function checkRateLimit(req, { keyPrefix, maxRequests, windowMs }) {
-  const key = keyPrefix + ':' + getClientKey(req);
+  return checkRateLimitByKey(keyPrefix + ':' + getClientKey(req), { maxRequests, windowMs });
+}
+
+// Same sliding-window logic, but keyed on anything you supply directly —
+// e.g. a phone number, so OTP requests are limited per-phone regardless of
+// which IP address they come from (an attacker spreading requests across
+// IPs shouldn't be able to spam one person's phone with codes).
+function checkRateLimitByKey(key, { maxRequests, windowMs }) {
   const now = Date.now();
   const bucket = buckets.get(key);
 
@@ -37,4 +44,4 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-module.exports = { checkRateLimit };
+module.exports = { checkRateLimit, checkRateLimitByKey };

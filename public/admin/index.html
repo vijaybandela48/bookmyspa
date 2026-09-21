@@ -19,14 +19,24 @@
   <div class="stat-grid" id="stats" style="margin-top:24px"></div>
 
   <div class="tabs">
-    <div class="tab active" data-tab="spas" onclick="switchTab('spas')">Spa approvals</div>
-    <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">All bookings</div>
-    <div class="tab" data-tab="users" onclick="switchTab('users')">Users</div>
+    <div class="tab active" data-tab="spas" onclick="switchTab('spas')">🏢 Spas</div>
+    <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">📅 Bookings</div>
+    <div class="tab" data-tab="transactions" onclick="switchTab('transactions')">💳 Transactions</div>
+    <div class="tab" data-tab="users" onclick="switchTab('users')">👤 Customers &amp; owners</div>
+    <div class="tab" data-tab="messages" onclick="switchTab('messages')">✉️ Messages <span id="msgBadge"></span></div>
   </div>
 
   <div id="tab-spas"><div id="spaList"><p>Loading…</p></div></div>
   <div id="tab-bookings" style="display:none"><div id="bookingList"><p>Loading…</p></div></div>
+  <div id="tab-transactions" style="display:none"><div id="transactionList"><p>Loading…</p></div></div>
   <div id="tab-users" style="display:none"><div id="userList"><p>Loading…</p></div></div>
+  <div id="tab-messages" style="display:none"><div id="messageList"><p>Loading…</p></div></div>
+</div>
+
+<div class="modal-overlay" id="detailModal">
+  <div class="modal" style="max-width:640px;max-height:85vh;overflow-y:auto">
+    <div id="detailModalBody"></div>
+  </div>
 </div>
 
 <script src="/js/api.js"></script>
@@ -36,22 +46,30 @@ if (!API.isLoggedIn() || API.user().role !== 'admin') window.location.href = '/l
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['spas','bookings','users'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  ['spas','bookings','transactions','users','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
   if (name === 'bookings') loadBookings();
+  if (name === 'transactions') loadTransactions();
   if (name === 'users') loadUsers();
+  if (name === 'messages') loadMessages();
 }
+
+function closeDetailModal() { document.getElementById('detailModal').classList.remove('open'); }
 
 async function loadStats() {
   try {
     const s = await API.get('/admin/stats');
     document.getElementById('stats').innerHTML = `
-      <div class="stat-card"><div class="num">${s.totalSpas}</div><div class="label">Total spas</div></div>
-      <div class="stat-card"><div class="num">${s.pendingSpas}</div><div class="label">Pending review</div></div>
-      <div class="stat-card"><div class="num">${s.totalUsers}</div><div class="label">Users</div></div>
-      <div class="stat-card"><div class="num">${s.totalBookings}</div><div class="label">Total bookings</div></div>
-      <div class="stat-card"><div class="num">${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
-      <div class="stat-card"><div class="num">${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
+      <div class="stat-card"><div class="num">🏢 ${s.totalSpas}</div><div class="label">Total spas</div></div>
+      <div class="stat-card"><div class="num">⏳ ${s.pendingSpas}</div><div class="label">Pending review</div></div>
+      <div class="stat-card"><div class="num">🙋 ${s.totalCustomers}</div><div class="label">Customers</div></div>
+      <div class="stat-card"><div class="num">🧑‍💼 ${s.totalOwners}</div><div class="label">Spa owners</div></div>
+      <div class="stat-card"><div class="num">📅 ${s.totalBookings}</div><div class="label">Total bookings</div></div>
+      <div class="stat-card"><div class="num">✅ ${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
+      <div class="stat-card"><div class="num">💰 ${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
+      <div class="stat-card"><div class="num">✉️ ${s.newMessages}</div><div class="label">New messages</div></div>
     `;
+    const badge = document.getElementById('msgBadge');
+    badge.innerHTML = s.newMessages > 0 ? `<span class="badge pending" style="margin-left:2px">${s.newMessages}</span>` : '';
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -66,19 +84,21 @@ async function loadSpas() {
     const { spas } = await API.get('/admin/spas');
     if (!spas.length) { el.innerHTML = `<p class="helper-text">No spas listed yet.</p>`; return; }
     el.innerHTML = spas.map(s => `
-      <div class="panel" style="margin-bottom:14px">
+      <div class="panel" style="margin-bottom:14px;cursor:pointer" onclick="openSpaDetail(${s.id})">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
           <div>
-            <h3 style="margin-bottom:4px">${s.cover_emoji} ${s.name}</h3>
+            <span class="mono helper-text" style="margin:0">ID #${s.id}</span>
+            <h3 style="margin:2px 0 4px">${s.cover_emoji} ${s.name}</h3>
             <div class="helper-text">${s.city} ${s.address ? '· ' + s.address : ''} · Owner: ${s.owner_name} (${s.owner_email})</div>
           </div>
           ${statusBadge(s.status)}
         </div>
         <p style="font-size:14px;color:var(--ink-soft);margin:10px 0">${s.description || ''}</p>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap" onclick="event.stopPropagation()">
           ${s.status !== 'approved' ? `<button class="btn small gold" onclick="setSpaStatus(${s.id},'approved')">Approve</button>` : ''}
           ${s.status !== 'rejected' ? `<button class="btn small outline" onclick="setSpaStatus(${s.id},'rejected')">Reject</button>` : ''}
           ${s.status !== 'pending' ? `<button class="btn small outline" onclick="setSpaStatus(${s.id},'pending')">Set pending</button>` : ''}
+          <button class="btn small outline" onclick="openSpaDetail(${s.id})">View full details</button>
         </div>
       </div>
     `).join('');
@@ -93,6 +113,56 @@ async function setSpaStatus(id, status) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+async function openSpaDetail(id) {
+  const modal = document.getElementById('detailModal');
+  const body = document.getElementById('detailModalBody');
+  body.innerHTML = '<p>Loading…</p>';
+  modal.classList.add('open');
+  try {
+    const d = await API.get(`/admin/spas/${id}`);
+    const s = d.spa;
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:start">
+        <div>
+          <span class="mono helper-text" style="margin:0">Spa ID #${s.id}</span>
+          <h2 style="margin:2px 0 6px">${s.cover_emoji} ${s.name}</h2>
+        </div>
+        <button class="btn small outline" onclick="closeDetailModal()">Close</button>
+      </div>
+      ${statusBadge(s.status)}
+      <hr class="divider-line">
+      <p style="font-size:14px;color:var(--ink-soft)">${s.description || ''}</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13.5px;margin:14px 0">
+        <div><strong>City</strong><br>${s.city}</div>
+        <div><strong>Address</strong><br>${s.address || '—'}</div>
+        <div><strong>Hours</strong><br>${formatTime(s.opening_time)} – ${formatTime(s.closing_time)}</div>
+        <div><strong>Rating</strong><br>★ ${Math.round(s.rating*10)/10}</div>
+        <div><strong>Location</strong><br>${s.latitude ? `<a href="https://www.google.com/maps?q=${s.latitude},${s.longitude}" target="_blank" style="color:var(--moss);font-weight:600">View on map</a>` : 'Not set'}</div>
+        <div><strong>Photos/videos</strong><br>${d.mediaCount} uploaded</div>
+      </div>
+      <hr class="divider-line">
+      <h4 style="margin-bottom:6px">Owner</h4>
+      <p style="font-size:13.5px;color:var(--ink-soft)">${s.owner_name} · ${s.owner_email} · ${s.owner_phone || 'no phone'}</p>
+      <hr class="divider-line">
+      <h4 style="margin-bottom:6px">Rooms &amp; capacity (${d.roomTypes.length})</h4>
+      ${d.roomTypes.length ? d.roomTypes.map(rt => `<p style="font-size:13.5px;color:var(--ink-soft);margin:4px 0">🛏️ ${rt.name} — ${rt.capacity} room${rt.capacity!==1?'s':''}</p>`).join('') : '<p class="helper-text">None defined.</p>'}
+      <hr class="divider-line">
+      <h4 style="margin-bottom:6px">Services (${d.services.length})</h4>
+      ${d.services.map(sv => `<p style="font-size:13.5px;color:var(--ink-soft);margin:4px 0">${sv.name} — ${money(sv.price)}${sv.discount_percent > 0 ? ` (${sv.discount_percent}% off)` : ''} ${sv.active ? '' : '<span class="badge cancelled">removed</span>'}</p>`).join('') || '<p class="helper-text">None yet.</p>'}
+      <hr class="divider-line">
+      <h4 style="margin-bottom:6px">Coupons (${d.coupons.length})</h4>
+      ${d.coupons.map(c => `<p style="font-size:13.5px;color:var(--ink-soft);margin:4px 0" class="mono">${c.code} — ${c.discount_type === 'percent' ? c.discount_value+'%' : money(c.discount_value)} off ${c.active ? '' : '(disabled)'}</p>`).join('') || '<p class="helper-text">None yet.</p>'}
+      <hr class="divider-line">
+      <div class="stat-grid" style="grid-template-columns:1fr 1fr">
+        <div class="stat-card"><div class="num">${d.totalBookings}</div><div class="label">Total bookings</div></div>
+        <div class="stat-card"><div class="num">${money(d.revenue)}</div><div class="label">Revenue</div></div>
+      </div>
+    `;
+  } catch (e) {
+    body.innerHTML = `<p>${e.message}</p><button class="btn small outline" onclick="closeDetailModal()">Close</button>`;
+  }
+}
+
 const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
 
 async function loadBookings() {
@@ -102,21 +172,58 @@ async function loadBookings() {
     const { bookings } = await API.get('/admin/bookings');
     if (!bookings.length) { el.innerHTML = `<p class="helper-text">No bookings yet.</p>`; return; }
     el.innerHTML = `
-      <div class="panel" style="padding:0;overflow:hidden">
+      <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th style="padding:10px 14px">Customer</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Service</th>
-            <th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Status</th>
+            <th style="padding:10px 14px">ID</th><th style="padding:10px 14px">Customer</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Service</th>
+            <th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Payment</th><th style="padding:10px 14px">Status</th>
           </tr></thead>
           <tbody>
             ${bookings.map(b => `
               <tr style="border-top:1px solid var(--line)">
+                <td style="padding:10px 14px" class="mono helper-text">#${b.id}</td>
                 <td style="padding:10px 14px">${b.customer_name}</td>
                 <td style="padding:10px 14px">${b.spa_name}</td>
                 <td style="padding:10px 14px">${b.service_name}</td>
                 <td style="padding:10px 14px">${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
                 <td style="padding:10px 14px" class="mono">${money(b.amount)}</td>
+                <td style="padding:10px 14px">${b.payment_mode === 'pay_at_venue' ? '🏢 At spa' : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}</td>
                 <td style="padding:10px 14px"><span class="badge ${b.status}">${statusLabel[b.status]}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+async function loadTransactions() {
+  const el = document.getElementById('transactionList');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { transactions, totalRevenue } = await API.get('/admin/transactions');
+    const summary = `<div class="stat-card" style="max-width:260px;margin-bottom:16px"><div class="num">${money(totalRevenue)}</div><div class="label">Total successful revenue</div></div>`;
+    if (!transactions.length) { el.innerHTML = summary + `<p class="helper-text">No transactions yet.</p>`; return; }
+    el.innerHTML = summary + `
+      <div class="panel" style="padding:0;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+          <thead><tr style="background:var(--stone-dark);text-align:left">
+            <th style="padding:10px 14px">Txn ID</th><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Customer</th>
+            <th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Method</th>
+            <th style="padding:10px 14px">Reference</th><th style="padding:10px 14px">Status</th>
+          </tr></thead>
+          <tbody>
+            ${transactions.map(t => `
+              <tr style="border-top:1px solid var(--line)">
+                <td style="padding:10px 14px" class="mono helper-text">#${t.id}</td>
+                <td style="padding:10px 14px">${formatDate(t.booking_date)}</td>
+                <td style="padding:10px 14px">${t.customer_name}</td>
+                <td style="padding:10px 14px">${t.spa_name}</td>
+                <td style="padding:10px 14px" class="mono">${money(t.amount)}</td>
+                <td style="padding:10px 14px;text-transform:capitalize">${t.method}</td>
+                <td style="padding:10px 14px" class="mono helper-text">${t.transaction_ref}</td>
+                <td style="padding:10px 14px"><span class="badge ${t.status === 'success' ? 'confirmed' : 'cancelled'}">${t.status}</span></td>
               </tr>
             `).join('')}
           </tbody>
@@ -132,18 +239,22 @@ async function loadUsers() {
   try {
     const { users } = await API.get('/admin/users');
     el.innerHTML = `
-      <div class="panel" style="padding:0;overflow:hidden">
+      <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th style="padding:10px 14px">Name</th><th style="padding:10px 14px">Email</th><th style="padding:10px 14px">Phone</th><th style="padding:10px 14px">Role</th>
+            <th style="padding:10px 14px">ID</th><th style="padding:10px 14px">Name</th><th style="padding:10px 14px">Email</th>
+            <th style="padding:10px 14px">Phone</th><th style="padding:10px 14px">Role</th><th style="padding:10px 14px">Joined</th><th></th>
           </tr></thead>
           <tbody>
             ${users.map(u => `
-              <tr style="border-top:1px solid var(--line)">
+              <tr style="border-top:1px solid var(--line);cursor:pointer" onclick="openUserDetail(${u.id})">
+                <td style="padding:10px 14px" class="mono helper-text">#${u.id}</td>
                 <td style="padding:10px 14px">${u.name}</td>
                 <td style="padding:10px 14px">${u.email}</td>
-                <td style="padding:10px 14px">${u.phone || '—'}</td>
-                <td style="padding:10px 14px"><span class="badge approved">${u.role}</span></td>
+                <td style="padding:10px 14px">${u.phone || '—'} ${u.phone_verified ? '✅' : ''}</td>
+                <td style="padding:10px 14px"><span class="badge approved" style="text-transform:capitalize">${u.role}</span></td>
+                <td style="padding:10px 14px" class="helper-text">${formatDate(u.created_at.slice(0,10))}</td>
+                <td style="padding:10px 14px"><button class="btn small outline" onclick="event.stopPropagation();openUserDetail(${u.id})">View</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -151,6 +262,97 @@ async function loadUsers() {
       </div>
     `;
   } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+async function openUserDetail(id) {
+  const modal = document.getElementById('detailModal');
+  const body = document.getElementById('detailModalBody');
+  body.innerHTML = '<p>Loading…</p>';
+  modal.classList.add('open');
+  try {
+    const d = await API.get(`/admin/users/${id}`);
+    const u = d.user;
+    let extra = '';
+    if (u.role === 'customer') {
+      extra = `
+        <div class="stat-grid" style="grid-template-columns:1fr 1fr;margin:14px 0">
+          <div class="stat-card"><div class="num">${d.totalBookings}</div><div class="label">Total bookings</div></div>
+          <div class="stat-card"><div class="num">${money(d.totalSpent)}</div><div class="label">Total spent</div></div>
+        </div>
+        <h4 style="margin-bottom:6px">Booking history</h4>
+        ${d.bookings.length ? d.bookings.map(b => `
+          <div class="service-row">
+            <div><h4 style="font-size:14px">${b.service_name}</h4><div class="desc">${b.spa_name} · ${formatDate(b.booking_date)}</div></div>
+            <div style="text-align:right"><div class="price" style="font-size:14px">${money(b.amount)}</div><span class="badge ${b.status}">${statusLabel[b.status]}</span></div>
+          </div>
+        `).join('') : '<p class="helper-text">No bookings yet.</p>'}
+      `;
+    } else if (u.role === 'owner') {
+      extra = `
+        <h4 style="margin-bottom:6px">Spas owned (${d.spas.length})</h4>
+        ${d.spas.length ? d.spas.map(s => `
+          <div class="service-row">
+            <div><h4 style="font-size:14px">${s.cover_emoji} ${s.name}</h4><div class="desc">${s.city}</div></div>
+            ${statusBadge(s.status)}
+          </div>
+        `).join('') : '<p class="helper-text">No spas listed yet.</p>'}
+      `;
+    }
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:start">
+        <div>
+          <span class="mono helper-text" style="margin:0">User ID #${u.id}</span>
+          <h2 style="margin:2px 0 6px">${u.name}</h2>
+        </div>
+        <button class="btn small outline" onclick="closeDetailModal()">Close</button>
+      </div>
+      <span class="badge approved" style="text-transform:capitalize">${u.role}</span>
+      <div style="font-size:13.5px;color:var(--ink-soft);margin:14px 0">
+        <p style="margin:4px 0">✉️ ${u.email}</p>
+        <p style="margin:4px 0">📞 ${u.phone || 'Not provided'} ${u.phone_verified ? '<span class="badge confirmed" style="margin-left:4px">Verified</span>' : ''}</p>
+        <p style="margin:4px 0">📅 Joined ${formatDate(u.created_at.slice(0,10))}</p>
+      </div>
+      <hr class="divider-line">
+      ${extra}
+    `;
+  } catch (e) {
+    body.innerHTML = `<p>${e.message}</p><button class="btn small outline" onclick="closeDetailModal()">Close</button>`;
+  }
+}
+
+const messageStatusLabel = { new: 'New', read: 'Read', resolved: 'Resolved' };
+
+async function loadMessages() {
+  const el = document.getElementById('messageList');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { messages } = await API.get('/admin/messages');
+    if (!messages.length) { el.innerHTML = `<div class="empty-state"><div class="big">📭</div><p>No messages yet.</p></div>`; return; }
+    el.innerHTML = messages.map(m => `
+      <div class="panel" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
+          <div>
+            <h4 style="margin-bottom:2px">${m.subject || '(No subject)'}</h4>
+            <div class="helper-text">${m.name} · ${m.email} · ${formatDate(m.created_at.slice(0,10))}</div>
+          </div>
+          <span class="badge ${m.status === 'new' ? 'pending' : m.status === 'resolved' ? 'confirmed' : 'approved'}">${messageStatusLabel[m.status]}</span>
+        </div>
+        <p style="font-size:14px;color:var(--ink-soft);margin:10px 0;white-space:pre-wrap">${m.message}</p>
+        <div style="display:flex;gap:8px">
+          ${m.status !== 'read' ? `<button class="btn small outline" onclick="setMessageStatus(${m.id},'read')">Mark read</button>` : ''}
+          ${m.status !== 'resolved' ? `<button class="btn small gold" onclick="setMessageStatus(${m.id},'resolved')">Mark resolved</button>` : ''}
+          <a class="btn small outline" href="mailto:${m.email}">Reply by email</a>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+}
+
+async function setMessageStatus(id, status) {
+  try {
+    await API.put(`/admin/messages/${id}`, { status });
+    loadMessages(); loadStats();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 loadStats();

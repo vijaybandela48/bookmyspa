@@ -26,10 +26,18 @@
       <label>Email</label>
       <input type="email" id="email" required placeholder="you@example.com">
       <label>Phone</label>
-      <input id="phone" required placeholder="10-digit mobile number">
+      <div style="display:flex;gap:8px">
+        <input id="phone" required placeholder="10-digit mobile number" oninput="onPhoneChanged()">
+        <button type="button" class="btn small outline" style="white-space:nowrap" id="sendOtpBtn" onclick="sendRegisterOtp()" disabled>Send OTP</button>
+      </div>
+      <div id="otpSection" style="display:none">
+        <label>Verification code</label>
+        <input id="otpCode" placeholder="6-digit code" inputmode="numeric" maxlength="6">
+        <p class="helper-text" id="otpStatus"></p>
+      </div>
       <label>Password</label>
       <input type="password" id="password" required minlength="6" placeholder="At least 6 characters">
-      <button class="btn gold block" style="margin-top:20px" type="submit">Create account</button>
+      <button class="btn gold block" style="margin-top:20px" type="submit" id="registerBtn" disabled>Verify phone to continue</button>
     </form>
     <hr class="divider-line">
     <p style="font-size:13.5px;color:var(--ink-soft)">
@@ -38,13 +46,70 @@
   </div>
 </div>
 
+<div id="sb-footer"></div>
+
 <script src="/js/api.js"></script>
 <script>
 renderNav();
+renderFooter();
 let role = 'customer';
 function setRole(r) {
   role = r;
   document.querySelectorAll('.role-toggle button').forEach(b => b.classList.toggle('active', b.dataset.role === r));
+}
+
+let otpSent = false;
+let otpCooldownTimer = null;
+
+function onPhoneChanged() {
+  const phone = document.getElementById('phone').value.replace(/\D/g, '');
+  document.getElementById('sendOtpBtn').disabled = phone.length < 10;
+  // If they edit the phone after sending, they need to re-verify
+  if (otpSent) {
+    otpSent = false;
+    document.getElementById('otpSection').style.display = 'none';
+    document.getElementById('registerBtn').disabled = true;
+    document.getElementById('registerBtn').textContent = 'Verify phone to continue';
+  }
+}
+
+async function sendRegisterOtp() {
+  const btn = document.getElementById('sendOtpBtn');
+  const phone = document.getElementById('phone').value.trim();
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const result = await API.post('/auth/otp/send', { phone, purpose: 'registration' });
+    otpSent = true;
+    document.getElementById('otpSection').style.display = 'block';
+    document.getElementById('registerBtn').disabled = false;
+    document.getElementById('registerBtn').textContent = 'Create account';
+    const statusEl = document.getElementById('otpStatus');
+    statusEl.textContent = result.devCode
+      ? `Code sent. (Dev mode — no SMS provider configured, your code is ${result.devCode})`
+      : 'Code sent by SMS. It expires in 5 minutes.';
+    statusEl.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
+    document.getElementById('otpCode').focus();
+    startOtpCooldown(btn);
+  } catch (err) {
+    toast(err.message, 'error');
+    btn.disabled = false; btn.textContent = 'Send OTP';
+  }
+}
+
+function startOtpCooldown(btn) {
+  let seconds = 30;
+  btn.disabled = true;
+  clearInterval(otpCooldownTimer);
+  otpCooldownTimer = setInterval(() => {
+    seconds -= 1;
+    if (seconds <= 0) {
+      clearInterval(otpCooldownTimer);
+      btn.disabled = false;
+      btn.textContent = 'Resend OTP';
+    } else {
+      btn.textContent = `Resend in ${seconds}s`;
+    }
+  }, 1000);
 }
 
 document.getElementById('registerForm').addEventListener('submit', async (e) => {
@@ -53,8 +118,12 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
   const email = document.getElementById('email').value.trim();
   const phone = document.getElementById('phone').value.trim();
   const password = document.getElementById('password').value;
+  const otpCode = document.getElementById('otpCode').value.trim();
+  if (!otpCode) { toast('Enter the verification code sent to your phone.', 'error'); return; }
+  const btn = document.getElementById('registerBtn');
+  btn.disabled = true; btn.textContent = 'Creating account…';
   try {
-    const { token, user } = await API.post('/auth/register', { name, email, phone, password, role });
+    const { token, user } = await API.post('/auth/register', { name, email, phone, password, role, otpCode });
     API.saveSession(token, user);
     toast('Account created! Welcome, ' + user.name.split(' ')[0]);
     setTimeout(() => {
@@ -63,6 +132,7 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
     }, 400);
   } catch (err) {
     toast(err.message, 'error');
+    btn.disabled = false; btn.textContent = 'Create account';
   }
 });
 </script>

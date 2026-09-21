@@ -128,4 +128,20 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
   return result;
 }
 
-module.exports = { sendBookingConfirmation };
+const isSmsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM);
+
+// Sends a one-time verification code via SMS, for registration/login.
+// In mock mode (no Twilio credentials), the code is only ever logged to the
+// server console — the API layer decides separately whether it's safe to
+// also hand the code back in the response (only when not live, so testing
+// works without real SMS, and never in a way that could leak a real code).
+async function sendOtpSms(phone, code) {
+  const body = `${code} is your SpaBook verification code. It expires in 5 minutes. Don't share this code with anyone.`;
+  const result = await sendTwilioMessage(phone, body, { from: process.env.TWILIO_SMS_FROM });
+  if (result.status === 'mocked') {
+    console.log(`[MOCK OTP] ${phone} -> ${code}`);
+  }
+  return result;
+}
+
+module.exports = { sendBookingConfirmation, sendOtpSms, isSmsConfigured };

@@ -41,6 +41,7 @@ the server — it will reseed automatically.
 ## What's included (working, end-to-end)
 
 **Customer side**
+- **Register with phone verification**: a 6-digit SMS code must be verified before an account is created. **Log in with a password, or with OTP instead** — enter your phone, get a code, no password needed.
 - Browse/search spas by city or keyword
 - Sort spas by **Featured**, **Top rated**, or **Nearby** — Nearby asks for browser location permission and sorts by real distance (Haversine formula), showing "X km away" on each card
 - View a spa's services, pick a date, see real-time slot availability (with rooms-left indicators when a service has limited capacity)
@@ -63,8 +64,12 @@ the server — it will reseed automatically.
 
 **Admin side**
 - Approve/reject new spa listings
-- Platform-wide stats (spas, users, bookings, revenue)
-- View all bookings and all users
+- Rich platform-wide stats dashboard (spas, customers, owners, bookings, revenue, new messages) with icons
+- **Click into any spa** for a full detail view by its unique ID: owner contact info, room types, every service and coupon, photo/video count, total bookings and revenue for that spa specifically
+- **Click into any customer or owner** for a full detail view by their unique ID: for customers, their complete booking history and total spend; for owners, every spa they run and its status
+- **Transactions tab**: every payment platform-wide — online and pay-at-venue — with transaction reference, method, and status, plus a running total of successful revenue
+- **Bookings tab** shows payment mode (online vs. pay-at-spa) and payment status at a glance for every booking
+- **Messages tab**: view and manage submissions from the public Contact page (mark read/resolved, reply by email directly)
 
 **Platform mechanics**
 - Real password hashing (scrypt) + signed session tokens (HMAC, JWT-style) — no
@@ -139,6 +144,9 @@ you can do (business registration, legal pages, etc).
    - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` for real WhatsApp via Twilio
 
    Set only the channels you need — anything without credentials stays mocked.
+   Registration and OTP login (below) reuse this same `TWILIO_SMS_FROM`
+   config — one set of credentials covers both booking confirmations and
+   verification codes.
 4. **Session security.** The server now **refuses to start** in
    `NODE_ENV=production` unless you set a real `TOKEN_SECRET` (a long random
    string — running on the built-in dev default would let anyone forge a
@@ -161,7 +169,14 @@ you can do (business registration, legal pages, etc).
    (10 login attempts / 15 min, 8 signups / hour, per IP) — enough to stop
    automated credential-stuffing without needing a separate service like
    Cloudflare, though adding one is still a good idea at scale.
-7. **Basic security headers** (X-Frame-Options, X-Content-Type-Options,
+7. **Phone verification (OTP).** Every new account must verify a 6-digit
+   SMS code before it's created, and existing accounts can log in with an
+   OTP instead of a password. OTP requests are rate-limited per phone number
+   (not just per IP) so one number can't be spammed with codes from
+   different addresses. In mock mode, the code is returned in the API
+   response so you can test the whole flow without any SMS provider — it
+   automatically stops doing that the moment real Twilio credentials are set.
+8. **Basic security headers** (X-Frame-Options, X-Content-Type-Options,
    HSTS in production) are set on every response.
 
 ### Still on you — these can't be coded around
@@ -169,15 +184,20 @@ you can do (business registration, legal pages, etc).
 - **Razorpay business verification (KYC)**: your business registration,
   bank account details, and PAN/GST get verified before they issue live
   keys — budget a few business days for this, start it early.
-- **Legal pages**: a Terms of Service, Privacy Policy, and a visible
-  Refund/Cancellation Policy — Razorpay actually requires the last one to
-  approve your account, and it protects you when a customer disputes a
-  charge.
+- **Legal pages**: `/about.html`, `/privacy.html`, `/terms.html` (includes a
+  cancellation/refund policy — Razorpay requires one to approve your
+  account), and a working `/contact.html` form are already built and linked
+  in the site footer. They're real working drafts, not lorem-ipsum, but
+  every `[insert ...]` placeholder (business name, contact email, governing
+  law, etc.) needs your actual details filled in, and a lawyer should review
+  both before you rely on them — especially against India's DPDP Act if
+  you're collecting customer data there.
 - **Data protection compliance**: if you're in India, the DPDP Act applies
   to storing customer names/phone/email — have a lawyer glance at your
   privacy policy rather than relying on a template.
-- **Backups**: automate regular backups of `data/spa_platform.db` and
-  `public/uploads/` to somewhere off the server (S3, Backblaze, etc). SQLite
+- **Backups**: automate regular backups of the whole `data/` folder (it
+  contains both the database and every uploaded photo/video) to somewhere
+  off the server (S3, Backblaze, etc). SQLite
   itself is reliable; losing the one file it lives in is the actual risk.
 - **Monitoring**: set up uptime alerts (e.g. UptimeRobot, Better Stack) and
   keep an eye on server logs for `[MOCK ...]` lines — that's your sign a

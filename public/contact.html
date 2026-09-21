@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contact us — SpaBook</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap page-body" style="max-width:900px">
+  <div class="eyebrow">Get in touch</div>
+  <h1 style="margin-top:4px">Contact us</h1>
+  <p style="color:var(--ink-soft);max-width:520px;margin-bottom:30px">
+    Question about a booking, interested in listing your spa, or found a bug? Send us a message and
+    we'll get back to you — usually within a business day.
+  </p>
+
+  <div class="two-col">
+    <div class="panel">
+      <form id="contactForm">
+        <label>Your name</label>
+        <input id="c_name" required placeholder="Full name">
+        <label>Email</label>
+        <input id="c_email" type="email" required placeholder="you@example.com">
+        <label>Subject</label>
+        <select id="c_subject">
+          <option value="General question">General question</option>
+          <option value="Booking issue">I have a question about a booking</option>
+          <option value="List my spa">I want to list my spa</option>
+          <option value="Report a problem">Report a problem</option>
+          <option value="Other">Other</option>
+        </select>
+        <label>Message</label>
+        <textarea id="c_message" rows="5" required placeholder="How can we help?"></textarea>
+        <button class="btn gold block" style="margin-top:18px" type="submit" id="contactSubmit">Send message</button>
+      </form>
+    </div>
+    <div>
+      <div class="panel">
+        <h3 style="font-size:18px;margin-bottom:12px">Other ways to reach us</h3>
+        <p style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">✉️ <strong>Email</strong><br>support@spabook.example</p>
+        <p style="font-size:14px;color:var(--ink-soft);margin-bottom:10px">📞 <strong>Phone</strong><br>+91 00000 00000</p>
+        <p style="font-size:14px;color:var(--ink-soft)">🕐 <strong>Hours</strong><br>Mon–Sat, 10am–7pm IST</p>
+      </div>
+      <div class="panel">
+        <h3 style="font-size:18px;margin-bottom:8px">Spa owner?</h3>
+        <p style="font-size:14px;color:var(--ink-soft);margin-bottom:14px">List your spa and start taking bookings — approval usually happens within a day.</p>
+        <a class="btn outline block" href="/register.html">List your spa</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="sb-footer"></div>
+
+<script src="/js/api.js"></script>
+<script>
+renderNav();
+renderFooter();
+
+document.getElementById('contactForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('contactSubmit');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await API.post('/contact', {
+      name: document.getElementById('c_name').value.trim(),
+      email: document.getElementById('c_email').value.trim(),
+      subject: document.getElementById('c_subject').value,
+      message: document.getElementById('c_message').value.trim(),
+    });
+    toast(r.message);
+    e.target.reset();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send message';
+  }
+});
+</script>
+</body>
+</html>

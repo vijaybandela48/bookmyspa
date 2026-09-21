@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT UNIQUE NOT NULL,
   phone TEXT,
+  phone_verified INTEGER NOT NULL DEFAULT 0,
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('customer','owner','admin')),
@@ -119,6 +120,27 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL,
+  code TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK(purpose IN ('registration','login')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  consumed INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS contact_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  subject TEXT,
+  message TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','read','resolved')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   booking_id INTEGER NOT NULL REFERENCES bookings(id),
@@ -162,7 +184,21 @@ try {
   if (!spaCols.includes('longitude')) {
     db.exec('ALTER TABLE spas ADD COLUMN longitude REAL');
   }
+  const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!userCols.includes('phone_verified')) {
+    db.exec('ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0');
+  }
 } catch (e) { /* ignore */ }
+
+// OTP login requires looking a user up by phone, so phone numbers need to be
+// unique. This is best-effort: if an existing deployment already has
+// duplicate phone numbers on file, this silently fails rather than crashing
+// the app — OTP login just won't work reliably until those are cleaned up.
+try {
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL');
+} catch (e) {
+  console.warn('Could not enforce unique phone numbers (likely duplicate phones already on file). OTP login may be unreliable until resolved.');
+}
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -182,7 +218,7 @@ function seed() {
   const mkUser = (name, email, password, role, phone) => {
     const { hash, salt } = hashPassword(password);
     const info = db.prepare(
-      'INSERT INTO users (name, email, phone, password_hash, password_salt, role) VALUES (?,?,?,?,?,?)'
+      'INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role) VALUES (?,?,?,1,?,?,?)'
     ).run(name, email, phone, hash, salt, role);
     return Number(info.lastInsertRowid);
   };

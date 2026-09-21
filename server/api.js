@@ -5,7 +5,7 @@ const { db, hashPassword, verifyPassword } = require('./db');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
-const { checkRateLimit } = require('./rateLimit');
+const { checkRateLimit, checkRateLimitByKey } = require('./rateLimit');
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads', 'spas');
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB raw body cap (covers ~15MB file as base64)
@@ -94,7 +94,7 @@ function saveDataUrlToFile(spaId, dataUrl) {
 }
 
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role };
+  return { id: u.id, name: u.name, email: u.email, phone: u.phone, phone_verified: !!u.phone_verified, role: u.role };
 }
 
 function publicSpa(s) {
@@ -217,6 +217,38 @@ function applyCoupon(amount, coupon) {
   return { finalAmount: Math.round(amount - discountAmount), discountAmount: Math.round(discountAmount) };
 }
 
+// ---- OTP (phone verification) ----
+function normalizePhone(phone) {
+  return (phone || '').replace(/[^\d+]/g, '');
+}
+
+function generateAndStoreOtp(phone, purpose) {
+  const code = String(crypto.randomInt(100000, 1000000));
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  db.prepare('INSERT INTO otp_codes (phone, code, purpose, expires_at) VALUES (?,?,?,?)').run(phone, code, purpose, expiresAt);
+  return code;
+}
+
+// Checks a submitted code against the most recent unconsumed OTP for this
+// phone+purpose. Limits guesses per code (5) independently of the send-side
+// rate limit, so even a leaked/guessed-at code can't be brute-forced.
+function verifyOtp(phone, code, purpose) {
+  const row = db.prepare(
+    `SELECT * FROM otp_codes WHERE phone = ? AND purpose = ? AND consumed = 0 ORDER BY id DESC LIMIT 1`
+  ).get(phone, purpose);
+  if (!row) return { valid: false, error: 'No verification code was requested for this number. Request a new code.' };
+  if (new Date(row.expires_at).getTime() < Date.now()) return { valid: false, error: 'This code has expired. Request a new one.' };
+  if (row.attempts >= 5) return { valid: false, error: 'Too many incorrect attempts. Request a new code.' };
+
+  if (row.code !== String(code).trim()) {
+    db.prepare('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = ?').run(row.id);
+    return { valid: false, error: 'Incorrect code. Please try again.' };
+  }
+
+  db.prepare('UPDATE otp_codes SET consumed = 1 WHERE id = ?').run(row.id);
+  return { valid: true };
+}
+
 async function handleApi(req, res, pathname, query) {
   const parts = pathname.split('/').filter(Boolean); // e.g. ['api','spas','3']
 
@@ -275,24 +307,64 @@ async function handleApi(req, res, pathname, query) {
     }
 
     // ---------------- AUTH ----------------
+    // Sends a 6-digit code by SMS. Used before registration (to verify a new
+    // phone) and before OTP login (to prove you own an existing account's phone).
+    if (parts[1] === 'auth' && parts[2] === 'otp' && parts[3] === 'send' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const phone = normalizePhone(body.phone);
+      const purpose = ['registration', 'login'].includes(body.purpose) ? body.purpose : null;
+      if (!phone || phone.length < 10) return sendJSON(res, 400, { error: 'Enter a valid phone number.' });
+      if (!purpose) return sendJSON(res, 400, { error: 'Invalid request.' });
+
+      if (!checkRateLimitByKey('otp_send:' + phone, { maxRequests: 3, windowMs: 10 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many codes requested for this number. Please wait a few minutes.' });
+      }
+      if (!checkRateLimit(req, { keyPrefix: 'otp_send_ip', maxRequests: 10, windowMs: 10 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many requests. Please wait a few minutes.' });
+      }
+
+      if (purpose === 'registration') {
+        const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
+        if (existing) return sendJSON(res, 409, { error: 'This phone number is already registered. Try logging in instead.' });
+      } else {
+        const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
+        if (!existing) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
+      }
+
+      const code = generateAndStoreOtp(phone, purpose);
+      const result = await notifier.sendOtpSms(phone, code);
+
+      const response = { success: true, message: 'Verification code sent.' };
+      if (!notifier.isSmsConfigured) response.devCode = code; // mock mode only — never leaks a real SMS code
+      return sendJSON(res, 200, response);
+    }
+
     if (parts[1] === 'auth' && parts[2] === 'register' && req.method === 'POST') {
       if (!checkRateLimit(req, { keyPrefix: 'register', maxRequests: 8, windowMs: 60 * 60 * 1000 })) {
         return sendJSON(res, 429, { error: 'Too many signup attempts. Please try again later.' });
       }
       const body = await parseBody(req);
-      const { name, email, password, phone, role } = body;
-      if (!name || !email || !password || !role) return sendJSON(res, 400, { error: 'name, email, password and role are required.' });
+      const { name, email, password, role } = body;
+      const phone = normalizePhone(body.phone);
+      if (!name || !email || !password || !role || !phone) return sendJSON(res, 400, { error: 'name, email, phone, and password are required.' });
       if (password.length < 6) return sendJSON(res, 400, { error: 'Password must be at least 6 characters.' });
       if (!['customer', 'owner'].includes(role)) return sendJSON(res, 400, { error: 'role must be customer or owner.' });
-      const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-      if (existing) return sendJSON(res, 409, { error: 'An account with this email already exists.' });
+
+      const otpResult = verifyOtp(phone, body.otpCode, 'registration');
+      if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
+
+      const existingEmail = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+      if (existingEmail) return sendJSON(res, 409, { error: 'An account with this email already exists.' });
+      const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
+      if (existingPhone) return sendJSON(res, 409, { error: 'An account with this phone number already exists.' });
+
       const { hash, salt } = hashPassword(password);
       const info = db.prepare(
-        'INSERT INTO users (name, email, phone, password_hash, password_salt, role) VALUES (?,?,?,?,?,?)'
-      ).run(name, email, phone || null, hash, salt, role);
+        'INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role) VALUES (?,?,?,1,?,?,?)'
+      ).run(name, email, phone, hash, salt, role);
       const user = { id: Number(info.lastInsertRowid), name, email, role };
       const token = sign({ id: user.id, role: user.role, name: user.name });
-      return sendJSON(res, 201, { token, user: publicUser({ ...user, phone }) });
+      return sendJSON(res, 201, { token, user: publicUser({ ...user, phone, phone_verified: 1 }) });
     }
 
     if (parts[1] === 'auth' && parts[2] === 'login' && req.method === 'POST') {
@@ -305,6 +377,26 @@ async function handleApi(req, res, pathname, query) {
       if (!u || !verifyPassword(password, u.password_salt, u.password_hash)) {
         return sendJSON(res, 401, { error: 'Invalid email or password.' });
       }
+      const token = sign({ id: u.id, role: u.role, name: u.name });
+      return sendJSON(res, 200, { token, user: publicUser(u) });
+    }
+
+    // OTP login: an alternative to password login. Prove ownership of the
+    // phone on file for an existing account and skip the password entirely.
+    if (parts[1] === 'auth' && parts[2] === 'otp' && parts[3] === 'login' && req.method === 'POST') {
+      if (!checkRateLimit(req, { keyPrefix: 'otp_login_ip', maxRequests: 10, windowMs: 15 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes and try again.' });
+      }
+      const body = await parseBody(req);
+      const phone = normalizePhone(body.phone);
+      if (!phone) return sendJSON(res, 400, { error: 'Enter a valid phone number.' });
+
+      const otpResult = verifyOtp(phone, body.code, 'login');
+      if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
+
+      const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+      if (!u) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
+
       const token = sign({ id: u.id, role: u.role, name: u.name });
       return sendJSON(res, 200, { token, user: publicUser(u) });
     }
@@ -407,6 +499,20 @@ async function handleApi(req, res, pathname, query) {
         discount_amount: applied.discountAmount,
         final_amount: applied.finalAmount,
       });
+    }
+
+    // ---------------- PUBLIC: CONTACT FORM ----------------
+    if (parts[1] === 'contact' && req.method === 'POST') {
+      if (!checkRateLimit(req, { keyPrefix: 'contact', maxRequests: 5, windowMs: 60 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many messages sent. Please try again later.' });
+      }
+      const body = await parseBody(req);
+      const { name, email, subject, message } = body;
+      if (!name || !email || !message) return sendJSON(res, 400, { error: 'Name, email, and message are required.' });
+      if (message.length > 5000) return sendJSON(res, 400, { error: 'Message is too long.' });
+      db.prepare('INSERT INTO contact_messages (name, email, subject, message) VALUES (?,?,?,?)')
+        .run(name.slice(0, 200), email.slice(0, 200), (subject || '').slice(0, 200), message);
+      return sendJSON(res, 201, { message: "Thanks — we'll get back to you soon." });
     }
 
     // ---------------- CUSTOMER: BOOKINGS ----------------
@@ -990,7 +1096,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     // ---------------- ADMIN ----------------
-    if (parts[1] === 'admin' && parts[2] === 'spas' && req.method === 'GET') {
+    if (parts[1] === 'admin' && parts[2] === 'spas' && parts.length === 3 && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
       const spas = db.prepare(
@@ -1010,11 +1116,74 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { message: `Spa marked as ${body.status}.` });
     }
 
-    if (parts[1] === 'admin' && parts[2] === 'users' && req.method === 'GET') {
+    if (parts[1] === 'admin' && parts[2] === 'users' && parts.length === 3 && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
-      const users = db.prepare('SELECT id, name, email, phone, role, created_at FROM users ORDER BY created_at DESC').all();
+      const users = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at FROM users ORDER BY created_at DESC').all();
       return sendJSON(res, 200, { users });
+    }
+
+    // Rich per-customer view: full profile plus their booking + spend history.
+    if (parts[1] === 'admin' && parts[2] === 'users' && parts.length === 4 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const target = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at FROM users WHERE id = ?').get(parts[3]);
+      if (!target) return sendJSON(res, 404, { error: 'User not found.' });
+
+      if (target.role === 'customer') {
+        const bookings = db.prepare(
+          `SELECT b.*, s.name as spa_name, sv.name as service_name
+           FROM bookings b JOIN spas s ON s.id = b.spa_id JOIN services sv ON sv.id = b.service_id
+           WHERE b.customer_id = ? ORDER BY b.created_at DESC`
+        ).all(target.id);
+        const totalSpent = bookings.filter(b => b.payment_status === 'paid').reduce((sum, b) => sum + b.amount, 0);
+        return sendJSON(res, 200, { user: target, bookings, totalSpent, totalBookings: bookings.length });
+      }
+
+      if (target.role === 'owner') {
+        const spas = db.prepare('SELECT * FROM spas WHERE owner_id = ? ORDER BY created_at DESC').all(target.id);
+        return sendJSON(res, 200, { user: target, spas });
+      }
+
+      return sendJSON(res, 200, { user: target });
+    }
+
+    // Rich per-spa view for the admin: full detail, room types, services, coupons, revenue.
+    if (parts[1] === 'admin' && parts[2] === 'spas' && parts.length === 4 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const spa = db.prepare(
+        `SELECT s.*, u.name as owner_name, u.email as owner_email, u.phone as owner_phone
+         FROM spas s JOIN users u ON u.id = s.owner_id WHERE s.id = ?`
+      ).get(parts[3]);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+
+      const roomTypes = db.prepare('SELECT * FROM room_types WHERE spa_id = ?').all(spa.id);
+      const services = db.prepare('SELECT * FROM services WHERE spa_id = ?').all(spa.id);
+      const coupons = db.prepare('SELECT * FROM coupons WHERE spa_id = ?').all(spa.id);
+      const mediaCount = db.prepare('SELECT COUNT(*) c FROM spa_media WHERE spa_id = ?').get(spa.id).c;
+      const totalBookings = db.prepare('SELECT COUNT(*) c FROM bookings WHERE spa_id = ?').get(spa.id).c;
+      const revenue = db.prepare("SELECT COALESCE(SUM(amount),0) r FROM bookings WHERE spa_id = ? AND payment_status='paid'").get(spa.id).r;
+
+      return sendJSON(res, 200, { spa, roomTypes, services, coupons, mediaCount, totalBookings, revenue });
+    }
+
+    // All payments platform-wide, for reconciliation — both online (Razorpay/mock) and pay-at-venue.
+    if (parts[1] === 'admin' && parts[2] === 'transactions' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const rows = db.prepare(
+        `SELECT p.*, b.spa_id, b.service_id, b.booking_date, b.start_time, b.payment_mode,
+                s.name as spa_name, sv.name as service_name, u.name as customer_name, u.email as customer_email
+         FROM payments p
+         JOIN bookings b ON b.id = p.booking_id
+         JOIN spas s ON s.id = b.spa_id
+         JOIN services sv ON sv.id = b.service_id
+         JOIN users u ON u.id = b.customer_id
+         ORDER BY p.created_at DESC LIMIT 500`
+      ).all();
+      const totalRevenue = db.prepare("SELECT COALESCE(SUM(amount),0) r FROM payments WHERE status='success'").get().r;
+      return sendJSON(res, 200, { transactions: rows, totalRevenue });
     }
 
     if (parts[1] === 'admin' && parts[2] === 'bookings' && req.method === 'GET') {
@@ -1028,16 +1197,37 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { bookings: rows });
     }
 
+    if (parts[1] === 'admin' && parts[2] === 'messages' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const messages = db.prepare('SELECT * FROM contact_messages ORDER BY created_at DESC').all();
+      return sendJSON(res, 200, { messages });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'messages' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const msg = db.prepare('SELECT * FROM contact_messages WHERE id = ?').get(parts[3]);
+      if (!msg) return sendJSON(res, 404, { error: 'Message not found.' });
+      const body = await parseBody(req);
+      if (!['new', 'read', 'resolved'].includes(body.status)) return sendJSON(res, 400, { error: 'Invalid status.' });
+      db.prepare('UPDATE contact_messages SET status = ? WHERE id = ?').run(body.status, msg.id);
+      return sendJSON(res, 200, { message: 'Updated.' });
+    }
+
     if (parts[1] === 'admin' && parts[2] === 'stats' && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
       const totalSpas = db.prepare("SELECT COUNT(*) c FROM spas").get().c;
       const pendingSpas = db.prepare("SELECT COUNT(*) c FROM spas WHERE status='pending'").get().c;
       const totalUsers = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+      const totalCustomers = db.prepare("SELECT COUNT(*) c FROM users WHERE role='customer'").get().c;
+      const totalOwners = db.prepare("SELECT COUNT(*) c FROM users WHERE role='owner'").get().c;
       const totalBookings = db.prepare("SELECT COUNT(*) c FROM bookings").get().c;
       const confirmedBookings = db.prepare("SELECT COUNT(*) c FROM bookings WHERE status='confirmed'").get().c;
       const revenue = db.prepare("SELECT COALESCE(SUM(amount),0) r FROM bookings WHERE payment_status='paid'").get().r;
-      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalBookings, confirmedBookings, revenue });
+      const newMessages = db.prepare("SELECT COUNT(*) c FROM contact_messages WHERE status='new'").get().c;
+      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages });
     }
 
     // No route matched

@@ -108,3 +108,34 @@ function renderNav(active) {
     </div>
   `;
 }
+
+// Renders the shared footer into any element with id="sb-footer"
+function renderFooter() {
+  const footer = document.getElementById('sb-footer');
+  if (!footer) return;
+  const year = new Date().getFullYear();
+  footer.innerHTML = `
+    <div class="wrap footer-inner">
+      <div class="footer-col footer-brand">
+        <div class="brand" style="color:var(--white)"><span class="brand-mark">🌿</span> SpaBook</div>
+        <p>Book massage and spa appointments online — browse nearby spas, compare prices, and pay securely.</p>
+      </div>
+      <div class="footer-col">
+        <h5>Company</h5>
+        <a href="/about.html">About us</a>
+        <a href="/contact.html">Contact us</a>
+      </div>
+      <div class="footer-col">
+        <h5>Legal</h5>
+        <a href="/privacy.html">Privacy policy</a>
+        <a href="/terms.html">Terms of service</a>
+      </div>
+      <div class="footer-col">
+        <h5>For business</h5>
+        <a href="/register.html">List your spa</a>
+        <a href="/login.html">Owner login</a>
+      </div>
+    </div>
+    <div class="wrap footer-bottom">© ${year} SpaBook. All rights reserved.</div>
+  `;
+}

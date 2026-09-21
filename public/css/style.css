@@ -255,4 +255,23 @@ label:first-child { margin-top: 0; }
 .helper-text { font-size: 12.5px; color: var(--ink-soft); margin-top: 4px; }
 .divider-line { border: none; border-top: 1px solid var(--line); margin: 20px 0; }
 
-footer { text-align: center; padding: 30px 0; color: var(--ink-soft); font-size: 13px; }
+/* ---------- Footer ---------- */
+#sb-footer { background: var(--moss-deep); margin-top: 60px; }
+.footer-inner {
+  display: grid; grid-template-columns: 1.6fr repeat(3, 1fr); gap: 32px;
+  padding: 48px 24px 32px;
+}
+@media (max-width: 760px) { .footer-inner { grid-template-columns: 1fr 1fr; } }
+.footer-col h5 {
+  color: rgba(255,255,255,0.55); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+  font-weight: 700; margin: 0 0 14px;
+}
+.footer-col a {
+  display: block; color: rgba(255,255,255,0.82); font-size: 14px; margin-bottom: 10px; width: fit-content;
+}
+.footer-col a:hover { color: var(--gold); }
+.footer-brand p { color: rgba(255,255,255,0.55); font-size: 13.5px; line-height: 1.6; margin-top: 10px; max-width: 280px; }
+.footer-bottom {
+  border-top: 1px solid rgba(255,255,255,0.1); padding: 18px 24px; color: rgba(255,255,255,0.45);
+  font-size: 12.5px; text-align: center;
+}

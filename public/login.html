@@ -15,13 +15,32 @@
 <div class="wrap auth-wrap">
   <div class="panel">
     <h2>Welcome back</h2>
-    <p class="helper-text" style="margin-bottom:16px">Log in to book a slot, manage your spa, or access the admin panel.</p>
-    <form id="loginForm">
+    <p class="helper-text" style="margin-bottom:14px">Log in to book a slot, manage your spa, or access the admin panel.</p>
+    <div class="role-toggle">
+      <button type="button" class="active" data-mode="password" onclick="setLoginMode('password')">🔑 Password</button>
+      <button type="button" data-mode="otp" onclick="setLoginMode('otp')">💬 OTP</button>
+    </div>
+
+    <form id="loginForm" style="margin-top:16px">
       <label>Email</label>
       <input type="email" id="email" required placeholder="you@example.com">
       <label>Password</label>
       <input type="password" id="password" required placeholder="••••••••">
       <button class="btn gold block" style="margin-top:20px" type="submit">Log in</button>
+    </form>
+
+    <form id="otpLoginForm" style="margin-top:16px;display:none">
+      <label>Phone number</label>
+      <div style="display:flex;gap:8px">
+        <input id="otpPhone" required placeholder="10-digit mobile number" oninput="onOtpPhoneChanged()">
+        <button type="button" class="btn small outline" style="white-space:nowrap" id="sendLoginOtpBtn" onclick="sendLoginOtp()" disabled>Send OTP</button>
+      </div>
+      <div id="loginOtpSection" style="display:none">
+        <label>Verification code</label>
+        <input id="loginOtpCode" placeholder="6-digit code" inputmode="numeric" maxlength="6">
+        <p class="helper-text" id="loginOtpStatus"></p>
+      </div>
+      <button class="btn gold block" style="margin-top:20px" type="submit" id="otpLoginBtn" disabled>Log in with OTP</button>
     </form>
     <hr class="divider-line">
     <p style="font-size:13.5px;color:var(--ink-soft)">
@@ -37,9 +56,18 @@
   </div>
 </div>
 
+<div id="sb-footer"></div>
+
 <script src="/js/api.js"></script>
 <script>
 renderNav();
+renderFooter();
+function goToRoleHome(user) {
+  if (user.role === 'owner') window.location.href = '/owner/index.html';
+  else if (user.role === 'admin') window.location.href = '/admin/index.html';
+  else window.location.href = '/';
+}
+
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email').value.trim();
@@ -48,13 +76,69 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     const { token, user } = await API.post('/auth/login', { email, password });
     API.saveSession(token, user);
     toast('Welcome back, ' + user.name.split(' ')[0] + '!');
-    setTimeout(() => {
-      if (user.role === 'owner') window.location.href = '/owner/index.html';
-      else if (user.role === 'admin') window.location.href = '/admin/index.html';
-      else window.location.href = '/';
-    }, 400);
+    setTimeout(() => goToRoleHome(user), 400);
   } catch (err) {
     toast(err.message, 'error');
+  }
+});
+
+function setLoginMode(mode) {
+  document.querySelectorAll('.role-toggle button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  document.getElementById('loginForm').style.display = mode === 'password' ? 'block' : 'none';
+  document.getElementById('otpLoginForm').style.display = mode === 'otp' ? 'block' : 'none';
+}
+
+function onOtpPhoneChanged() {
+  const phone = document.getElementById('otpPhone').value.replace(/\D/g, '');
+  document.getElementById('sendLoginOtpBtn').disabled = phone.length < 10;
+  document.getElementById('loginOtpSection').style.display = 'none';
+  document.getElementById('otpLoginBtn').disabled = true;
+}
+
+let loginOtpCooldownTimer = null;
+async function sendLoginOtp() {
+  const btn = document.getElementById('sendLoginOtpBtn');
+  const phone = document.getElementById('otpPhone').value.trim();
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const result = await API.post('/auth/otp/send', { phone, purpose: 'login' });
+    document.getElementById('loginOtpSection').style.display = 'block';
+    document.getElementById('otpLoginBtn').disabled = false;
+    const statusEl = document.getElementById('loginOtpStatus');
+    statusEl.textContent = result.devCode
+      ? `Code sent. (Dev mode — no SMS provider configured, your code is ${result.devCode})`
+      : 'Code sent by SMS. It expires in 5 minutes.';
+    statusEl.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
+    document.getElementById('loginOtpCode').focus();
+
+    let seconds = 30;
+    clearInterval(loginOtpCooldownTimer);
+    loginOtpCooldownTimer = setInterval(() => {
+      seconds -= 1;
+      if (seconds <= 0) { clearInterval(loginOtpCooldownTimer); btn.disabled = false; btn.textContent = 'Resend OTP'; }
+      else { btn.textContent = `Resend in ${seconds}s`; }
+    }, 1000);
+  } catch (err) {
+    toast(err.message, 'error');
+    btn.disabled = false; btn.textContent = 'Send OTP';
+  }
+}
+
+document.getElementById('otpLoginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const phone = document.getElementById('otpPhone').value.trim();
+  const code = document.getElementById('loginOtpCode').value.trim();
+  if (!code) { toast('Enter the verification code.', 'error'); return; }
+  const btn = document.getElementById('otpLoginBtn');
+  btn.disabled = true; btn.textContent = 'Logging in…';
+  try {
+    const { token, user } = await API.post('/auth/otp/login', { phone, code });
+    API.saveSession(token, user);
+    toast('Welcome back, ' + user.name.split(' ')[0] + '!');
+    setTimeout(() => goToRoleHome(user), 400);
+  } catch (err) {
+    toast(err.message, 'error');
+    btn.disabled = false; btn.textContent = 'Log in with OTP';
   }
 });
 </script>
