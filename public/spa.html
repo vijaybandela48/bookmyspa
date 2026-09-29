@@ -16,6 +16,7 @@
 <div class="wrap page-body">
   <div id="spaHeader"><p>Loading…</p></div>
   <div id="mediaGallery" style="display:none;margin-top:20px"></div>
+  <div id="spaLocation" style="margin-top:20px"></div>
 
   <div class="two-col" id="mainContent" style="display:none;margin-top:26px">
     <div>
@@ -92,11 +93,30 @@ async function loadSpa() {
       </div>
     `;
     renderGallery(media || []);
+    renderLocation(spa);
     renderServices();
     document.getElementById('mainContent').style.display = 'grid';
   } catch (e) {
     document.getElementById('spaHeader').innerHTML = `<div class="empty-state"><div class="big">🙁</div><p>${e.message}</p></div>`;
   }
+}
+
+async function renderLocation(spa) {
+  const el = document.getElementById('spaLocation');
+  if (spa.latitude == null || spa.longitude == null) { el.innerHTML = ''; return; }
+  const cfg = await getConfig();
+  const q = `${spa.latitude},${spa.longitude}`;
+  const src = cfg.googleMapsKey
+    ? `https://www.google.com/maps/embed/v1/place?key=${encodeURIComponent(cfg.googleMapsKey)}&q=${q}&zoom=16`
+    : `https://www.google.com/maps?q=${q}&z=16&output=embed`;
+  el.innerHTML = `
+    <div class="panel" style="padding:0;overflow:hidden">
+      <iframe title="Map showing ${esc(spa.name)}" src="${src}" style="width:100%;height:240px;border:0;display:block" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;flex-wrap:wrap">
+        <span style="font-size:14px;color:var(--ink-soft)">📍 ${esc(spa.address || spa.city)}</span>
+        <a class="btn small gold" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${q}">🧭 Get directions</a>
+      </div>
+    </div>`;
 }
 
 function renderGallery(media) {
@@ -263,6 +283,15 @@ async function openPayModal() {
     document.getElementById('modeOnlineBtn').style.display = 'none';
     setPaymentMode('pay_at_venue');
     document.getElementById('venueHint').textContent = 'Online payment is coming soon — reserve your slot now and pay by cash, card or UPI at the spa.';
+  }
+  if (spaData.allow_pay_at_venue === false) {
+    document.getElementById('modeVenueBtn').style.display = 'none';
+    if (onlineOk) setPaymentMode('online');
+    else {
+      document.getElementById('venueHint').style.display = 'block';
+      document.getElementById('venueHint').textContent = 'This spa only accepts online payment, which isn’t available yet. Please check back soon.';
+      document.getElementById('confirmPayBtn').disabled = true;
+    }
   }
   modal.classList.add('open');
 }

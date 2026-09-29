@@ -134,6 +134,7 @@ function publicSpa(s) {
     status: s.status, rating: Math.round(s.rating * 10) / 10, cover_emoji: s.cover_emoji,
     cover_image_url: cover ? cover.url : null,
     latitude: s.latitude, longitude: s.longitude,
+    allow_pay_at_venue: s.allow_pay_at_venue !== 0,
     owner_id: s.owner_id,
   };
 }
@@ -209,6 +210,72 @@ function checkPortal(user, portal) {
   if (user.role === 'customer') return 'This is a customer account. Please log in on the main BookMySpa website.';
   return 'Invalid email or password.'; // never reveal that an admin account exists
 }
+
+// ---------------- COMMISSION ----------------
+// Platform commission is a % of what the customer actually pays (after
+// discounts/coupons). The rate is snapshotted onto each booking when it's made,
+// so changing a spa's rate later never rewrites past bookings.
+const DEFAULT_COMMISSION = Math.min(50, Math.max(0, Number(process.env.COMMISSION_PERCENT || 10)));
+const round2 = (x) => Math.round(x * 100) / 100;
+function commissionRateFor(spa) {
+  return spa.commission_percent !== null && spa.commission_percent !== undefined ? spa.commission_percent : DEFAULT_COMMISSION;
+}
+function applyCommission(bookingId, spa, amount) {
+  const rate = commissionRateFor(spa);
+  db.prepare('UPDATE bookings SET commission_percent = ?, commission_amount = ? WHERE id = ?').run(rate, round2((amount * rate) / 100), bookingId);
+}
+
+// What's owed between the platform and one spa, over all not-yet-settled
+// bookings whose appointment has happened (or the owner marked completed):
+//  - ONLINE bookings: the platform holds the customer's money -> owes the spa (amount - commission)
+//  - PAY-AT-SPA bookings: the spa holds the money -> owes the platform its commission.
+//    This accrues once the appointment date passes, whether or not the owner
+//    clicks "Mark as paid" (otherwise skipping that click would dodge commission).
+//    Genuine no-shows are marked by the owner and carry no commission.
+// Net > 0: platform pays the spa. Net < 0: spa pays the platform.
+function settlementSummary(spaId) {
+  const today = localNow().date;
+  const rows = db.prepare(
+    `SELECT id, amount, commission_amount, payment_mode FROM bookings
+     WHERE spa_id = ? AND settlement_id IS NULL
+       AND (status = 'completed' OR (status = 'confirmed' AND booking_date < ?))
+       AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
+  ).all(spaId, today);
+  const s = { bookingIds: rows.map((r) => r.id), count: rows.length, onlineGross: 0, onlineCommission: 0, venueGross: 0, venueCommission: 0 };
+  for (const r of rows) {
+    if (r.payment_mode === 'online') { s.onlineGross += r.amount; s.onlineCommission += r.commission_amount; }
+    else { s.venueGross += r.amount; s.venueCommission += r.commission_amount; }
+  }
+  for (const k of ['onlineGross', 'onlineCommission', 'venueGross', 'venueCommission']) s[k] = round2(s[k]);
+  s.commissionTotal = round2(s.onlineCommission + s.venueCommission);
+  s.netToSpa = round2(s.onlineGross - s.onlineCommission - s.venueCommission);
+  return s;
+}
+function noShowStats(spaId) {
+  const r = db.prepare(
+    `SELECT SUM(CASE WHEN cancel_reason = 'no_show' THEN 1 ELSE 0 END) AS noShows, COUNT(*) AS total
+     FROM bookings WHERE spa_id = ? AND payment_mode = 'pay_at_venue' AND status IN ('confirmed','completed','cancelled')
+       AND booking_date >= date('now','-90 days')`
+  ).get(spaId);
+  const total = r.total || 0, noShows = r.noShows || 0;
+  return { noShows, total, rate: total ? Math.round((noShows / total) * 100) : 0 };
+}
+
+// Extracts coordinates from a Google Maps link or a pasted "lat, lng".
+function parseCoords(text) {
+  let s = String(text || '');
+  try { s = decodeURIComponent(s); } catch { /* keep raw */ }
+  const pats = [/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/, /[?&](?:q|query|ll|destination|center)=(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)/, /@(-?\d+\.\d+),(-?\d+\.\d+)/, /^\s*(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*$/];
+  for (const p of pats) {
+    const m = s.match(p);
+    if (m) {
+      const lat = Number(m[1]), lng = Number(m[2]);
+      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
+    }
+  }
+  return null;
+}
+const MAP_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|maps\.google\.[a-z.]+|(www\.)?google\.[a-z.]+)$/i;
 
 function getAvailableSlots(spa, service, date) {
   cleanupStaleBookings();
@@ -374,7 +441,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'config' && req.method === 'GET') {
-      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/' });
+      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION });
     }
 
     // ---------------- AUTH ----------------
@@ -405,6 +472,11 @@ async function handleApi(req, res, pathname, query) {
 
       const code = generateAndStoreOtp(phone, purpose);
       const result = await notifier.sendOtpSms(phone, code);
+      if (result.status === 'failed') {
+        console.error('OTP delivery failed:', result.detail);
+        db.prepare('UPDATE otp_codes SET consumed = 1 WHERE phone = ? AND purpose = ? AND consumed = 0').run(phone, purpose);
+        return sendJSON(res, 502, { error: "We couldn't send the SMS right now. Please try again in a minute." });
+      }
 
       const response = { success: true, message: 'Verification code sent.' };
       if (!notifier.isSmsConfigured && !isProduction) response.devCode = code; // local development only
@@ -618,6 +690,9 @@ async function handleApi(req, res, pathname, query) {
       const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(spaId);
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spaId);
       if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
+      if (paymentMode === 'pay_at_venue' && spa.allow_pay_at_venue === 0) {
+        return sendJSON(res, 400, { error: 'This spa requires online payment to confirm a booking.' });
+      }
 
       const slots = getAvailableSlots(spa, service, date);
       const chosen = slots.find((s) => s.start_time === startTime);
@@ -644,6 +719,7 @@ async function handleApi(req, res, pathname, query) {
           `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
            VALUES (?,?,?,?,?,?,?,?,?,'confirmed','unpaid','pay_at_venue')`
         ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
+      applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
 
         if (appliedCode) {
           db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(spaId, appliedCode);
@@ -665,6 +741,7 @@ async function handleApi(req, res, pathname, query) {
         `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
          VALUES (?,?,?,?,?,?,?,?,?,'pending_payment','unpaid','online')`
       ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
+      applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
 
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
       return sendJSON(res, 201, { booking, message: 'Slot held. Complete payment within 10 minutes to confirm.' });
@@ -761,6 +838,9 @@ async function handleApi(req, res, pathname, query) {
       if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (!['pending_payment', 'confirmed'].includes(booking.status)) {
         return sendJSON(res, 409, { error: 'This booking cannot be cancelled.' });
+      }
+      if (booking.booking_date < localNow().date || booking.settlement_id) {
+        return sendJSON(res, 409, { error: 'Past appointments can no longer be cancelled. Please contact support.' });
       }
 
       let refundMessage = '';
@@ -1164,8 +1244,15 @@ async function handleApi(req, res, pathname, query) {
       ).get(parts[3], user.id);
       if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
       const body = await parseBody(req);
-      if (!['completed', 'cancelled'].includes(body.status)) return sendJSON(res, 400, { error: 'status must be completed or cancelled.' });
-      db.prepare('UPDATE bookings SET status = ? WHERE id = ?').run(body.status, booking.id);
+      if (!['completed', 'cancelled', 'no_show'].includes(body.status)) return sendJSON(res, 400, { error: 'Invalid status.' });
+      if (booking.settlement_id) return sendJSON(res, 409, { error: 'This booking is already settled and can no longer be changed.' });
+      if (body.status === 'no_show') {
+        if (booking.payment_mode !== 'pay_at_venue' || booking.payment_status === 'paid') return sendJSON(res, 400, { error: 'Only unpaid pay-at-spa bookings can be marked as a no-show.' });
+        if (booking.booking_date > localNow().date) return sendJSON(res, 400, { error: "You can't mark a no-show before the appointment date." });
+        db.prepare("UPDATE bookings SET status = 'cancelled', cancel_reason = 'no_show' WHERE id = ?").run(booking.id);
+      } else {
+        db.prepare('UPDATE bookings SET status = ?, cancel_reason = ? WHERE id = ?').run(body.status, body.status === 'cancelled' ? 'owner' : null, booking.id);
+      }
       return sendJSON(res, 200, { message: 'Booking updated.' });
     }
 
@@ -1188,6 +1275,100 @@ async function handleApi(req, res, pathname, query) {
       db.prepare("UPDATE bookings SET payment_status = 'paid' WHERE id = ?").run(booking.id);
 
       return sendJSON(res, 200, { message: `Marked as paid (${method}).` });
+    }
+
+    // ---------------- OWNER: EARNINGS & SETTLEMENTS ----------------
+    if (parts[1] === 'owner' && parts[2] === 'earnings' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spas = db.prepare('SELECT * FROM spas WHERE owner_id = ?').all(user.id);
+      const result = spas.map((s) => {
+        const sum = settlementSummary(s.id); delete sum.bookingIds;
+        return { spa_id: s.id, spa_name: s.name, commission_percent: commissionRateFor(s), allow_pay_at_venue: s.allow_pay_at_venue !== 0, ...sum };
+      });
+      const history = db.prepare(
+        `SELECT st.*, s.name AS spa_name FROM settlements st JOIN spas s ON s.id = st.spa_id WHERE s.owner_id = ? ORDER BY st.created_at DESC LIMIT 50`
+      ).all(user.id);
+      return sendJSON(res, 200, { spas: result, history });
+    }
+
+    // Owners paste a Google Maps share link (incl. short maps.app.goo.gl links); we return the pin's coordinates.
+    if (parts[1] === 'owner' && parts[2] === 'resolve-map-link' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const body = await parseBody(req);
+      const input = String(body.url || '').trim();
+      let coords = parseCoords(input);
+      if (!coords) {
+        let url;
+        try { url = new URL(input); } catch { return sendJSON(res, 400, { error: 'Paste a Google Maps link or coordinates like 17.4156, 78.4347.' }); }
+        for (let hop = 0; hop < 5 && !coords; hop++) {
+          if (url.protocol !== 'https:' || !MAP_HOSTS.test(url.hostname)) break; // only ever fetch Google Maps hosts
+          let r;
+          try { r = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) }); } catch { break; }
+          const loc = r.headers.get('location');
+          if (!loc) break;
+          url = new URL(loc, url);
+          coords = parseCoords(url.href);
+        }
+      }
+      if (!coords) return sendJSON(res, 400, { error: "Couldn't find a location in that link. In Google Maps, drop a pin on your spa, tap Share, and paste the link here." });
+      return sendJSON(res, 200, coords);
+    }
+
+    // ---------------- ADMIN: COMMISSION & SETTLEMENTS ----------------
+    if (parts[1] === 'admin' && parts[2] === 'settlements' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const spas = db.prepare(`SELECT s.*, u.name AS owner_name, u.phone AS owner_phone FROM spas s JOIN users u ON u.id = s.owner_id WHERE s.status != 'rejected' ORDER BY s.name`).all();
+      const rows = spas.map((s) => {
+        const sum = settlementSummary(s.id); delete sum.bookingIds;
+        return { spa_id: s.id, spa_name: s.name, owner_name: s.owner_name, owner_phone: s.owner_phone, commission_percent: commissionRateFor(s),
+                 custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), ...sum };
+      });
+      const history = db.prepare(`SELECT st.*, s.name AS spa_name FROM settlements st JOIN spas s ON s.id = st.spa_id ORDER BY st.created_at DESC LIMIT 100`).all();
+      return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'spas' && parts[4] === 'settle' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[3]);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const body = await parseBody(req);
+      const sum = settlementSummary(spa.id);
+      if (!sum.count) return sendJSON(res, 400, { error: 'Nothing to settle for this spa right now.' });
+      const direction = sum.netToSpa > 0 ? 'payout_to_spa' : sum.netToSpa < 0 ? 'collected_from_spa' : 'zero';
+      db.exec('BEGIN');
+      try {
+        const info = db.prepare(
+          `INSERT INTO settlements (spa_id, direction, amount, booking_count, online_gross, venue_gross, commission_total, reference, note) VALUES (?,?,?,?,?,?,?,?,?)`
+        ).run(spa.id, direction, Math.abs(sum.netToSpa), sum.count, sum.onlineGross, sum.venueGross, sum.commissionTotal, (body.reference || '').slice(0, 120), (body.note || '').slice(0, 300));
+        const mark = db.prepare('UPDATE bookings SET settlement_id = ? WHERE id = ? AND settlement_id IS NULL');
+        for (const id of sum.bookingIds) mark.run(info.lastInsertRowid, id);
+        db.exec('COMMIT');
+        return sendJSON(res, 201, { message: 'Settlement recorded.', settlementId: Number(info.lastInsertRowid), direction, amount: Math.abs(sum.netToSpa) });
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'spas' && parts[4] === 'commercials' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[3]);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const body = await parseBody(req);
+      if (body.commission_percent !== undefined) {
+        const v = body.commission_percent === null || body.commission_percent === '' ? null : Number(body.commission_percent);
+        if (v !== null && !(v >= 0 && v <= 50)) return sendJSON(res, 400, { error: 'Commission must be between 0% and 50%.' });
+        db.prepare('UPDATE spas SET commission_percent = ? WHERE id = ?').run(v, spa.id);
+      }
+      if (body.allow_pay_at_venue !== undefined) {
+        db.prepare('UPDATE spas SET allow_pay_at_venue = ? WHERE id = ?').run(body.allow_pay_at_venue ? 1 : 0, spa.id);
+      }
+      return sendJSON(res, 200, { message: 'Updated. New rates apply to new bookings only.' });
     }
 
     // ---------------- ADMIN ----------------
@@ -1322,7 +1503,10 @@ async function handleApi(req, res, pathname, query) {
       const confirmedBookings = db.prepare("SELECT COUNT(*) c FROM bookings WHERE status='confirmed'").get().c;
       const revenue = db.prepare("SELECT COALESCE(SUM(amount),0) r FROM bookings WHERE payment_status='paid'").get().r;
       const newMessages = db.prepare("SELECT COUNT(*) c FROM contact_messages WHERE status='new'").get().c;
-      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages });
+      const commissionEarned = round2(db.prepare(
+        `SELECT COALESCE(SUM(commission_amount),0) c FROM bookings WHERE (status = 'completed' OR (status = 'confirmed' AND booking_date < ?)) AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
+      ).get(localNow().date).c);
+      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned });
     }
 
     // No route matched

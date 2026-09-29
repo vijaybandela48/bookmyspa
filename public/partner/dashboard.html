@@ -19,6 +19,7 @@
   <div class="tabs" style="margin-top:24px">
     <div class="tab active" data-tab="spas" onclick="switchTab('spas')">My spas</div>
     <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">Bookings</div>
+    <div class="tab" data-tab="earnings" onclick="switchTab('earnings')">💰 Earnings</div>
   </div>
 
   <div id="tab-spas">
@@ -47,7 +48,8 @@
             </div>
             <label>Location</label>
             <p class="helper-text" style="margin-top:-2px">Add coordinates so customers can find your spa under "Nearby." Easiest way: stand at the spa and tap the button below.</p>
-            <button type="button" class="btn small outline block" onclick="useCurrentLocation()" id="locateBtn">📍 Use my current location</button>
+            <button type="button" class="btn small gold block" onclick="openLocationPicker('new')">🗺️ Pick location on Google Maps</button>
+            <button type="button" class="btn small outline block" style="margin-top:8px" onclick="useCurrentLocation()" id="locateBtn">📍 Use my current location</button>
             <div style="display:flex;gap:10px;margin-top:10px">
               <div style="flex:1"><label>Latitude</label><input type="number" id="s_lat" step="0.000001" placeholder="e.g. 17.4156"></div>
               <div style="flex:1"><label>Longitude</label><input type="number" id="s_lng" step="0.000001" placeholder="e.g. 78.4347"></div>
@@ -161,6 +163,38 @@
   <div id="tab-bookings" style="display:none">
     <div id="ownerBookings"><p>Loading…</p></div>
   </div>
+
+  <div id="tab-earnings" style="display:none">
+    <div id="earnings"><p>Loading…</p></div>
+  </div>
+</div>
+
+<!-- Location picker -->
+<div class="modal-overlay" id="locModal">
+  <div class="modal" style="max-width:620px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 style="margin:0">Set your spa’s location</h3>
+      <button class="btn small outline" onclick="closeLocationPicker()">Close</button>
+    </div>
+    <p class="helper-text" id="locHint" style="margin:8px 0 12px">Search your spa or area, then drag the map so the pin sits exactly on your entrance.</p>
+    <div id="acBox" style="margin-bottom:10px"></div>
+    <div id="mapWrap" style="position:relative;height:320px;border-radius:var(--radius-sm);overflow:hidden;border:1px solid var(--line);display:none">
+      <div id="gmap" style="position:absolute;inset:0"></div>
+      <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);font-size:34px;pointer-events:none;filter:drop-shadow(0 2px 2px rgba(0,0,0,.4))">📍</div>
+    </div>
+    <iframe id="mapPreview" title="Location preview" style="width:100%;height:280px;border:1px solid var(--line);border-radius:var(--radius-sm);display:none" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+    <p class="mono helper-text" id="locCoords" style="margin:8px 0 4px"></p>
+    <label for="mapLink">Or paste a Google Maps link</label>
+    <div style="display:flex;gap:8px">
+      <input id="mapLink" placeholder="https://maps.app.goo.gl/… or 17.4156, 78.4347">
+      <button type="button" class="btn small outline" onclick="useMapLink()">Find</button>
+    </div>
+    <p class="helper-text">In the Google Maps app: long-press your spa to drop a pin → Share → Copy link.</p>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button type="button" class="btn outline block" onclick="pickerUseMyLocation()">📍 I’m at the spa now</button>
+      <button type="button" class="btn gold block" onclick="savePicker()">Save location</button>
+    </div>
+  </div>
 </div>
 
 <script src="/js/api.js"></script>
@@ -175,7 +209,9 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('tab-spas').style.display = name === 'spas' ? 'block' : 'none';
   document.getElementById('tab-bookings').style.display = name === 'bookings' ? 'block' : 'none';
+  document.getElementById('tab-earnings').style.display = name === 'earnings' ? 'block' : 'none';
   if (name === 'bookings') loadOwnerBookings();
+  if (name === 'earnings') loadEarnings();
 }
 
 function statusBadge(s) {
@@ -183,43 +219,7 @@ function statusBadge(s) {
   return `<span class="badge ${s}">${labels[s]}</span>`;
 }
 
-async function editSpaLocation(spaId, currentLat, currentLng) {
-  if (!navigator.geolocation) {
-    const lat = prompt('Latitude:', currentLat || '');
-    const lng = prompt('Longitude:', currentLng || '');
-    if (lat === null || lng === null) return;
-    try {
-      await API.put(`/owner/spas/${spaId}`, { latitude: lat, longitude: lng });
-      toast('Location updated.');
-      loadSpas();
-    } catch (e) { toast(e.message, 'error'); }
-    return;
-  }
-  const useCurrentConfirmed = confirm('Use your current location for this spa? Click Cancel to enter coordinates manually instead.');
-  if (useCurrentConfirmed) {
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        try {
-          await API.put(`/owner/spas/${spaId}`, { latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-          toast('Location updated!');
-          loadSpas();
-        } catch (e) { toast(e.message, 'error'); }
-      },
-      () => toast('Could not get your location. Try again or enter coordinates manually.', 'error'),
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-  } else {
-    const lat = prompt('Latitude:', currentLat || '');
-    if (lat === null) return;
-    const lng = prompt('Longitude:', currentLng || '');
-    if (lng === null) return;
-    try {
-      await API.put(`/owner/spas/${spaId}`, { latitude: lat, longitude: lng });
-      toast('Location updated.');
-      loadSpas();
-    } catch (e) { toast(e.message, 'error'); }
-  }
-}
+function editSpaLocation(spaId, currentLat, currentLng) { openLocationPicker(spaId, currentLat, currentLng); }
 
 async function loadSpas() {
   const el = document.getElementById('spaList');
@@ -732,6 +732,7 @@ async function loadOwnerBookings() {
             ${payAtVenueUnpaid ? `<span class="badge pending">Pay at spa — due</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
             ${payAtVenueUnpaid ? `<button class="btn small gold" onclick="markAsPaid(${b.id})">Mark as paid</button>` : ''}
+            ${payAtVenueUnpaid && b.status === 'confirmed' && b.booking_date <= localISODate() ? `<button class="btn small outline" onclick="markNoShow(${b.id})">Customer didn’t come</button>` : ''}
             ${b.status === 'confirmed' ? `<button class="btn small outline" onclick="setBookingStatus(${b.id},'completed')">Mark completed</button>` : ''}
           </div>
         </div>
@@ -761,6 +762,156 @@ async function markAsPaid(id) {
     toast(r.message);
     loadOwnerBookings();
   } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Google Maps location picker ----------------
+let pickerTarget = null, pickerCoords = null, pickerAddress = null, gmap = null, gmapsPromise = null, gmapsFailed = false;
+window.gm_authFailure = () => { gmapsFailed = true; showPreviewMode('Google Maps key was rejected — check the API key restrictions. You can still paste a link or use your current location.'); };
+
+function loadGoogleMaps(key) {
+  if (window.google && google.maps && google.maps.importLibrary) return Promise.resolve();
+  if (!gmapsPromise) gmapsPromise = new Promise((resolve, reject) => {
+    window.__gmReady = resolve;
+    const sc = document.createElement('script');
+    sc.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&callback=__gmReady&region=IN`;
+    sc.async = true;
+    sc.onerror = () => reject(new Error('Google Maps could not load'));
+    document.head.appendChild(sc);
+  });
+  return gmapsPromise;
+}
+function updateCoordText() {
+  document.getElementById('locCoords').textContent = pickerCoords
+    ? `📌 ${pickerCoords.lat.toFixed(6)}, ${pickerCoords.lng.toFixed(6)}${pickerAddress ? ' · ' + pickerAddress : ''}` : 'No location chosen yet.';
+}
+function showPreviewMode(hint) {
+  document.getElementById('mapWrap').style.display = 'none';
+  document.getElementById('acBox').innerHTML = '';
+  if (hint) document.getElementById('locHint').textContent = hint;
+  refreshPreview();
+}
+function refreshPreview() {
+  const f = document.getElementById('mapPreview');
+  if (gmap && !gmapsFailed) { f.style.display = 'none'; return; }
+  if (pickerCoords) { f.src = `https://www.google.com/maps?q=${pickerCoords.lat},${pickerCoords.lng}&z=17&output=embed`; f.style.display = 'block'; }
+  else f.style.display = 'none';
+}
+function setPickerCoords(lat, lng) {
+  pickerCoords = { lat: Number(lat), lng: Number(lng) };
+  if (gmap && !gmapsFailed) { gmap.setCenter(pickerCoords); gmap.setZoom(18); }
+  updateCoordText(); refreshPreview();
+}
+async function openLocationPicker(target, lat, lng) {
+  pickerTarget = target; pickerAddress = null; gmap = null;
+  if (target === 'new') { lat = document.getElementById('s_lat').value; lng = document.getElementById('s_lng').value; }
+  pickerCoords = lat && lng ? { lat: Number(lat), lng: Number(lng) } : null;
+  document.getElementById('mapLink').value = '';
+  document.getElementById('locModal').classList.add('open');
+  updateCoordText();
+  const cfg = await getConfig();
+  if (!cfg.googleMapsKey || gmapsFailed) { showPreviewMode('Paste your Google Maps link, or tap “I’m at the spa now”. A preview map will confirm the spot.'); return; }
+  try {
+    await loadGoogleMaps(cfg.googleMapsKey);
+    const { Map } = await google.maps.importLibrary('maps');
+    document.getElementById('mapWrap').style.display = 'block';
+    document.getElementById('mapPreview').style.display = 'none';
+    gmap = new Map(document.getElementById('gmap'), {
+      center: pickerCoords || { lat: 17.385, lng: 78.4867 }, zoom: pickerCoords ? 18 : 12,
+      mapTypeControl: false, streetViewControl: false, fullscreenControl: false, gestureHandling: 'greedy', clickableIcons: false,
+    });
+    gmap.addListener('idle', () => { const c = gmap.getCenter(); pickerCoords = { lat: c.lat(), lng: c.lng() }; updateCoordText(); });
+    const { PlaceAutocompleteElement } = await google.maps.importLibrary('places');
+    const ac = new PlaceAutocompleteElement({ includedRegionCodes: ['in'] });
+    ac.style.width = '100%';
+    const box = document.getElementById('acBox'); box.innerHTML = ''; box.appendChild(ac);
+    ac.addEventListener('gmp-select', async ({ placePrediction }) => {
+      const place = placePrediction.toPlace();
+      await place.fetchFields({ fields: ['displayName', 'formattedAddress', 'location'] });
+      pickerAddress = place.formattedAddress || null;
+      gmap.setCenter(place.location); gmap.setZoom(18);
+    });
+  } catch (e) {
+    gmap = null; showPreviewMode('Google Maps is unavailable right now — paste a map link or use your current location instead.');
+  }
+}
+function closeLocationPicker() { document.getElementById('locModal').classList.remove('open'); }
+async function useMapLink() {
+  const url = document.getElementById('mapLink').value.trim();
+  if (!url) return toast('Paste a Google Maps link first.', 'error');
+  try { const c = await API.post('/owner/resolve-map-link', { url }); setPickerCoords(c.lat, c.lng); toast('Location found — check the pin, then Save.'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+function pickerUseMyLocation() {
+  if (!navigator.geolocation) return toast('Your browser can’t share location. Paste a map link instead.', 'error');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => setPickerCoords(pos.coords.latitude, pos.coords.longitude),
+    (err) => toast(err.code === 1 ? 'Location permission denied. Paste a map link instead.' : 'Couldn’t get your location.', 'error'),
+    { enableHighAccuracy: true, timeout: 10000 });
+}
+async function savePicker() {
+  if (!pickerCoords) return toast('Choose a location first.', 'error');
+  const lat = pickerCoords.lat.toFixed(6), lng = pickerCoords.lng.toFixed(6);
+  if (pickerTarget === 'new') {
+    document.getElementById('s_lat').value = lat; document.getElementById('s_lng').value = lng;
+    if (pickerAddress && !document.getElementById('s_address').value.trim()) document.getElementById('s_address').value = pickerAddress;
+    closeLocationPicker(); toast('Location set.'); return;
+  }
+  try {
+    const body = { latitude: lat, longitude: lng };
+    if (pickerAddress) body.address = pickerAddress;
+    await API.put(`/owner/spas/${pickerTarget}`, body);
+    closeLocationPicker(); toast('Location saved!'); loadSpas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- No-shows ----------------
+async function markNoShow(id) {
+  if (!confirm('Mark this customer as a no-show? No commission is charged on no-shows. Frequent no-show reports are reviewed by BookMySpa.')) return;
+  try { await API.put(`/owner/bookings/${id}/status`, { status: 'no_show' }); toast('Marked as no-show.'); loadOwnerBookings(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Earnings ----------------
+async function loadEarnings() {
+  const el = document.getElementById('earnings');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { spas, history } = await API.get('/owner/earnings');
+    if (!spas.length) { el.innerHTML = '<div class="empty-state"><div class="big">💰</div><p>Add a spa to start earning.</p></div>'; return; }
+    el.innerHTML = `
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin-bottom:6px">How payouts work</h3>
+        <p class="helper-text" style="margin:0;line-height:1.7">
+          <strong>Online bookings:</strong> BookMySpa collects the payment and pays it to you minus commission.<br>
+          <strong>Pay-at-spa bookings:</strong> you collect the full amount, and the commission on it is deducted from your online payouts.
+          If you have no online payouts to deduct from, you settle the commission with us directly.<br>
+          Only appointments that have already happened are counted. No-shows you report carry no commission.
+        </p>
+      </div>
+      ${spas.map(s => `
+        <div class="panel" style="margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <h3 style="margin:0">${esc(s.spa_name)}</h3>
+            <span class="badge approved">Commission ${s.commission_percent}%</span>
+          </div>
+          <p class="helper-text">${s.count} unsettled appointment${s.count !== 1 ? 's' : ''}</p>
+          <div class="stat-grid" style="margin:12px 0 10px">
+            <div class="stat-card"><div class="num" style="font-size:22px">${money(s.onlineGross)}</div><div class="label">Paid online (held by us)</div></div>
+            <div class="stat-card"><div class="num" style="font-size:22px">${money(s.venueGross)}</div><div class="label">Paid at spa (held by you)</div></div>
+            <div class="stat-card"><div class="num" style="font-size:22px">${money(s.commissionTotal)}</div><div class="label">Commission</div></div>
+          </div>
+          <div class="panel" style="background:var(--stone-dark);border-color:${s.netToSpa >= 0 ? 'var(--moss-soft)' : 'var(--gold)'};padding:14px 18px">
+            <strong style="font-size:17px;color:var(--moss-deep)">${s.netToSpa > 0 ? `BookMySpa will pay you ${money(s.netToSpa)}` : s.netToSpa < 0 ? `You owe BookMySpa ${money(-s.netToSpa)}` : 'All settled — nothing owed either way'}</strong>
+          </div>
+        </div>`).join('')}
+      <h3 style="margin:24px 0 10px">Settlement history</h3>
+      ${history.length ? `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <thead><tr style="background:var(--stone-dark);text-align:left"><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Bookings</th><th style="padding:10px 14px">Result</th><th style="padding:10px 14px">Reference</th></tr></thead>
+        <tbody>${history.map(h => `<tr style="border-top:1px solid var(--line)">
+          <td style="padding:10px 14px">${formatDate(h.created_at)}</td><td style="padding:10px 14px">${esc(h.spa_name)}</td><td style="padding:10px 14px">${h.booking_count}</td>
+          <td style="padding:10px 14px">${h.direction === 'payout_to_spa' ? 'Paid to you ' + money(h.amount) : h.direction === 'collected_from_spa' ? 'You paid ' + money(h.amount) : 'Nothing owed'}</td>
+          <td style="padding:10px 14px" class="mono helper-text">${esc(h.reference || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No settlements yet.</p>'}`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
 }
 
 if (AUTH_OK) loadSpas();

@@ -109,7 +109,12 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     result = await sendEmail(recipient, `Booking confirmed — ${spa.name}`, message);
   } else if (channel === 'sms') {
     recipient = customer.phone;
-    result = await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_SMS_FROM });
+    result = msg91SmsConfigured
+      ? await msg91SendFlow(recipient, process.env.MSG91_BOOKING_TEMPLATE_ID, {
+          name: customer.name.split(' ')[0], service: service.name, spa: spa.name,
+          date: booking.booking_date, time: booking.start_time, amount: String(booking.amount),
+        })
+      : await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_SMS_FROM });
   } else if (channel === 'whatsapp') {
     recipient = customer.phone;
     result = await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_WHATSAPP_FROM, channelPrefix: 'whatsapp:' });
@@ -128,7 +133,56 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
   return result;
 }
 
-const isSmsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM);
+// ---- MSG91 (recommended for India) ----
+//   MSG91_AUTH_KEY              your MSG91 auth key
+//   MSG91_OTP_TEMPLATE_ID       DLT-approved OTP template (uses MSG91's ##OTP## variable)
+//   MSG91_BOOKING_TEMPLATE_ID   DLT-approved Flow template for booking confirmations, with
+//                               variables ##name## ##service## ##spa## ##date## ##time## ##amount##
+// We generate, rate-limit and verify OTPs ourselves and pass our code to MSG91
+// (their `otp` parameter), so behaviour is identical whichever provider is used.
+const msg91OtpConfigured = !!(process.env.MSG91_AUTH_KEY && process.env.MSG91_OTP_TEMPLATE_ID);
+const msg91SmsConfigured = !!(process.env.MSG91_AUTH_KEY && process.env.MSG91_BOOKING_TEMPLATE_ID);
+
+// MSG91 wants the country code with no "+": 9876543210 -> 919876543210
+function toMsg91Mobile(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (d.length === 10) return '91' + d;
+  if (d.length === 11 && d.startsWith('0')) return '91' + d.slice(1);
+  return d;
+}
+
+async function msg91SendOtp(phone, code) {
+  try {
+    const params = new URLSearchParams({ template_id: process.env.MSG91_OTP_TEMPLATE_ID, mobile: toMsg91Mobile(phone), otp: code, otp_expiry: '5' });
+    const res = await fetch('https://control.msg91.com/api/v5/otp?' + params, {
+      method: 'POST',
+      headers: { authkey: process.env.MSG91_AUTH_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.type === 'error') return { status: 'failed', detail: 'MSG91 OTP error: ' + (data.message || res.status) };
+    return { status: 'sent', detail: 'Sent via MSG91' };
+  } catch (e) {
+    return { status: 'failed', detail: e.message };
+  }
+}
+
+async function msg91SendFlow(phone, templateId, vars) {
+  try {
+    const res = await fetch('https://control.msg91.com/api/v5/flow/', {
+      method: 'POST',
+      headers: { authkey: process.env.MSG91_AUTH_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template_id: templateId, short_url: '0', recipients: [{ mobiles: toMsg91Mobile(phone), ...vars }] }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.type === 'error') return { status: 'failed', detail: 'MSG91 SMS error: ' + (data.message || res.status) };
+    return { status: 'sent', detail: 'Sent via MSG91' };
+  } catch (e) {
+    return { status: 'failed', detail: e.message };
+  }
+}
+
+const isSmsConfigured = msg91OtpConfigured || !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM);
 
 // Sends a one-time verification code via SMS, for registration/login.
 // In mock mode (no Twilio credentials), the code is only ever logged to the
@@ -137,11 +191,13 @@ const isSmsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_
 // works without real SMS, and never in a way that could leak a real code).
 async function sendOtpSms(phone, code) {
   const body = `${code} is your BookMySpa verification code. It expires in 5 minutes. Don't share this code with anyone.`;
-  const result = await sendTwilioMessage(phone, body, { from: process.env.TWILIO_SMS_FROM });
+  const result = msg91OtpConfigured
+    ? await msg91SendOtp(phone, code)
+    : await sendTwilioMessage(phone, body, { from: process.env.TWILIO_SMS_FROM });
   if (result.status === 'mocked') {
     console.log(`[MOCK OTP] ${phone} -> ${code}`);
   }
   return result;
 }
 
-module.exports = { sendBookingConfirmation, sendOtpSms, isSmsConfigured };
+module.exports = { sendBookingConfirmation, sendOtpSms, isSmsConfigured, toMsg91Mobile };

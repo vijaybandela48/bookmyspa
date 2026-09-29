@@ -73,6 +73,45 @@ a "paid" booking for free). Without Twilio, SMS/OTP is switched off and phones
 are marked unverified (rather than faking verification). Adding the keys turns
 each feature on automatically.
 
+## Environment variables for going live
+
+| Variable | What it does |
+|---|---|
+| `NODE_ENV=production`, `TOKEN_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Required in production (see below) |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Real online payments. Until set, production offers pay-at-spa only |
+| `MSG91_AUTH_KEY`, `MSG91_OTP_TEMPLATE_ID` | OTP by SMS via MSG91 (India). Until set, production skips OTP |
+| `MSG91_BOOKING_TEMPLATE_ID` | Booking-confirmation SMS via MSG91 Flow. Template variables: `##name## ##service## ##spa## ##date## ##time## ##amount##` |
+| `GOOGLE_MAPS_API_KEY` | Search + draggable map for owners, official embedded map for customers |
+| `COMMISSION_PERCENT` | Default platform commission (default 10). Per-spa overrides in Admin → Commission & payouts |
+| `PARTNER_URL` | Public URL of the partner portal, e.g. `https://partner.bookmyspa.in` |
+| `TZ_OFFSET_MINUTES` | Business timezone offset (default 330 = IST) |
+
+**MSG91 setup:** India requires DLT registration. Register your business and
+sender ID on a DLT portal, get your OTP and booking templates approved, then
+add the same templates in MSG91. The app generates, rate-limits and verifies
+OTPs itself and passes the code to MSG91 for delivery.
+
+**Google Maps setup:** in Google Cloud Console, enable **Maps JavaScript API**,
+**Places API (New)** and **Maps Embed API**, and create one API key. Restrict
+it (Application restrictions → Websites) to your domains, e.g.
+`https://bookmyspa.in/*` and `https://partner.bookmyspa.in/*`, because this key
+is visible in the browser; that is normal for Maps. Without a key,
+owners can still set their location by pasting a Google Maps share link or
+using their phone's GPS, and customers still get an embedded map and
+**Get directions**.
+
+## Commission
+
+- Commission is a percentage of what the customer actually paid (after discounts and coupons). The rate is locked onto each booking when it's made.
+- **Online bookings:** the platform collects the payment and owes the spa the amount minus commission.
+- **Pay-at-spa bookings:** the spa collects the payment and owes the platform the commission. This accrues once the appointment date passes, whether or not the owner clicks "Mark as paid", so the button can't be skipped to avoid commission. No-shows reported by the owner carry no commission, and each spa's no-show rate is shown to the admin.
+- **Settlement:** Admin → Commission & payouts shows the net for each spa:
+  - online money held − commission on it − commission on pay-at-spa bookings.
+  - A positive net means you pay the spa; a negative net means the spa pays you.
+  - After transferring the money, click **Record settlement** and enter the UTR or UPI reference. Those bookings are then locked.
+  - Owners see the same figures and full history on their Earnings tab.
+- **Enforcement:** if a spa doesn't settle, switch it to **Require online** so all its new bookings are prepaid.
+
 ## What's included (working, end-to-end)
 
 **Customer side**

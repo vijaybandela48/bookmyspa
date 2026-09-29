@@ -188,7 +188,32 @@ try {
   if (!userCols.includes('phone_verified')) {
     db.exec('ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0');
   }
-} catch (e) { /* ignore */ }
+  // Commission & settlement (see "Commission" in README)
+  const spaCols2 = db.prepare("PRAGMA table_info(spas)").all().map((c) => c.name);
+  if (!spaCols2.includes('commission_percent')) db.exec('ALTER TABLE spas ADD COLUMN commission_percent REAL'); // NULL = platform default
+  if (!spaCols2.includes('allow_pay_at_venue')) db.exec('ALTER TABLE spas ADD COLUMN allow_pay_at_venue INTEGER NOT NULL DEFAULT 1');
+  const bookingCols2 = db.prepare("PRAGMA table_info(bookings)").all().map((c) => c.name);
+  if (!bookingCols2.includes('commission_percent')) db.exec('ALTER TABLE bookings ADD COLUMN commission_percent REAL NOT NULL DEFAULT 0');
+  if (!bookingCols2.includes('commission_amount')) db.exec('ALTER TABLE bookings ADD COLUMN commission_amount REAL NOT NULL DEFAULT 0');
+  if (!bookingCols2.includes('settlement_id')) db.exec('ALTER TABLE bookings ADD COLUMN settlement_id INTEGER');
+  if (!bookingCols2.includes('cancel_reason')) db.exec('ALTER TABLE bookings ADD COLUMN cancel_reason TEXT');
+} catch (e) { console.error('Migration error:', e.message); }
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS settlements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  spa_id INTEGER NOT NULL REFERENCES spas(id),
+  direction TEXT NOT NULL CHECK(direction IN ('payout_to_spa','collected_from_spa','zero')),
+  amount REAL NOT NULL,
+  booking_count INTEGER NOT NULL,
+  online_gross REAL NOT NULL DEFAULT 0,
+  venue_gross REAL NOT NULL DEFAULT 0,
+  commission_total REAL NOT NULL DEFAULT 0,
+  reference TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
 
 // OTP login requires looking a user up by phone, so phone numbers need to be
 // unique. This is best-effort: if an existing deployment already has

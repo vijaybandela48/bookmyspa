@@ -23,6 +23,7 @@
     <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">📅 Bookings</div>
     <div class="tab" data-tab="transactions" onclick="switchTab('transactions')">💳 Transactions</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">👤 Customers &amp; owners</div>
+    <div class="tab" data-tab="settlements" onclick="switchTab('settlements')">💸 Commission &amp; payouts</div>
     <div class="tab" data-tab="messages" onclick="switchTab('messages')">✉️ Messages <span id="msgBadge"></span></div>
   </div>
 
@@ -30,6 +31,7 @@
   <div id="tab-bookings" style="display:none"><div id="bookingList"><p>Loading…</p></div></div>
   <div id="tab-transactions" style="display:none"><div id="transactionList"><p>Loading…</p></div></div>
   <div id="tab-users" style="display:none"><div id="userList"><p>Loading…</p></div></div>
+  <div id="tab-settlements" style="display:none"><div id="settlementList"><p>Loading…</p></div></div>
   <div id="tab-messages" style="display:none"><div id="messageList"><p>Loading…</p></div></div>
 </div>
 
@@ -46,11 +48,12 @@ const AUTH_OK = API.requireRole();
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['spas','bookings','transactions','users','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  ['spas','bookings','transactions','users','settlements','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
   if (name === 'bookings') loadBookings();
   if (name === 'transactions') loadTransactions();
   if (name === 'users') loadUsers();
   if (name === 'messages') loadMessages();
+  if (name === 'settlements') loadSettlements();
 }
 
 function closeDetailModal() { document.getElementById('detailModal').classList.remove('open'); }
@@ -66,6 +69,7 @@ async function loadStats() {
       <div class="stat-card"><div class="num">📅 ${s.totalBookings}</div><div class="label">Total bookings</div></div>
       <div class="stat-card"><div class="num">✅ ${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
       <div class="stat-card"><div class="num">💰 ${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
+      <div class="stat-card"><div class="num">🏦 ${money(s.commissionEarned)}</div><div class="label">Commission earned</div></div>
       <div class="stat-card"><div class="num">✉️ ${s.newMessages}</div><div class="label">New messages</div></div>
     `;
     const badge = document.getElementById('msgBadge');
@@ -318,6 +322,68 @@ async function openUserDetail(id) {
   } catch (e) {
     body.innerHTML = `<p>${e.message}</p><button class="btn small outline" onclick="closeDetailModal()">Close</button>`;
   }
+}
+
+async function loadSettlements() {
+  const el = document.getElementById('settlementList');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { spas, history, defaultCommission } = await API.get('/admin/settlements');
+    const th = 'style="padding:10px 12px;white-space:nowrap"', td = 'style="padding:10px 12px;vertical-align:top"';
+    el.innerHTML = `
+      <div class="panel" style="margin-bottom:16px">
+        <p class="helper-text" style="margin:0;line-height:1.7">Default commission: <strong>${defaultCommission}%</strong> (set <span class="mono">COMMISSION_PERCENT</span> on the server). Rates are locked onto each booking when it’s made.
+        <strong>Net</strong> = online money you hold − commission on it − commission on pay-at-spa bookings the spa collected. Positive: you pay the spa. Negative: the spa pays you.
+        Only appointments that have happened are included. Record a settlement after you’ve actually transferred/received the money.</p>
+      </div>
+      <div class="panel" style="padding:0;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+          <thead><tr style="background:var(--stone-dark);text-align:left">
+            <th ${th}>Spa</th><th ${th}>Rate</th><th ${th}>Pay at spa</th><th ${th}>No-shows (90d)</th><th ${th}>Unsettled</th>
+            <th ${th}>Online held</th><th ${th}>Collected at spa</th><th ${th}>Commission</th><th ${th}>Net</th><th ${th}></th>
+          </tr></thead>
+          <tbody>${spas.map(s => {
+            const risky = s.noShow.total >= 5 && s.noShow.rate >= 20;
+            return `<tr style="border-top:1px solid var(--line)">
+              <td ${td}><strong>${esc(s.spa_name)}</strong><div class="helper-text">${esc(s.owner_name)} · ${esc(s.owner_phone || '')}</div></td>
+              <td ${td}>${s.commission_percent}%${s.custom_rate ? ' <span class="badge pending">custom</span>' : ''}<br><button class="btn small outline" style="margin-top:4px" onclick="editRate(${s.spa_id}, ${s.custom_rate ? s.commission_percent : "''"})">Change</button></td>
+              <td ${td}>${s.allow_pay_at_venue ? '✅ Allowed' : '⛔ Online only'}<br><button class="btn small outline" style="margin-top:4px" onclick="togglePayAtSpa(${s.spa_id}, ${!s.allow_pay_at_venue})">${s.allow_pay_at_venue ? 'Require online' : 'Allow'}</button></td>
+              <td ${td}>${s.noShow.noShows}/${s.noShow.total} (${s.noShow.rate}%) ${risky ? '<span class="badge cancelled">review</span>' : ''}</td>
+              <td ${td}>${s.count}</td>
+              <td ${td} class="mono">${money(s.onlineGross)}</td>
+              <td ${td} class="mono">${money(s.venueGross)}</td>
+              <td ${td} class="mono">${money(s.commissionTotal)}</td>
+              <td ${td}><strong class="mono">${s.netToSpa > 0 ? 'Pay spa ' + money(s.netToSpa) : s.netToSpa < 0 ? 'Collect ' + money(-s.netToSpa) : '—'}</strong></td>
+              <td ${td}>${s.count ? `<button class="btn small gold" onclick="recordSettlement(${s.spa_id}, ${s.netToSpa})">Record settlement</button>` : ''}</td>
+            </tr>`; }).join('')}</tbody>
+        </table>
+      </div>
+      <h3 style="margin:24px 0 10px">Settlement history</h3>
+      ${history.length ? `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <thead><tr style="background:var(--stone-dark);text-align:left"><th ${th}>#</th><th ${th}>Date</th><th ${th}>Spa</th><th ${th}>Bookings</th><th ${th}>Commission</th><th ${th}>Result</th><th ${th}>Reference</th></tr></thead>
+        <tbody>${history.map(h => `<tr style="border-top:1px solid var(--line)">
+          <td ${td} class="mono helper-text">#${h.id}</td><td ${td}>${formatDate(h.created_at)}</td><td ${td}>${esc(h.spa_name)}</td><td ${td}>${h.booking_count}</td>
+          <td ${td} class="mono">${money(h.commission_total)}</td>
+          <td ${td}>${h.direction === 'payout_to_spa' ? 'Paid spa ' + money(h.amount) : h.direction === 'collected_from_spa' ? 'Collected ' + money(h.amount) : 'Nothing owed'}</td>
+          <td ${td} class="mono helper-text">${esc(h.reference || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No settlements recorded yet.</p>'}`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function editRate(spaId, current) {
+  const v = prompt('Commission % for this spa (0–50). Leave empty to use the platform default.', current);
+  if (v === null) return;
+  try { const r = await API.put(`/admin/spas/${spaId}/commercials`, { commission_percent: v.trim() === '' ? null : Number(v) }); toast(r.message); loadSettlements(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function togglePayAtSpa(spaId, allow) {
+  try { await API.put(`/admin/spas/${spaId}/commercials`, { allow_pay_at_venue: allow }); toast(allow ? 'Pay at spa allowed.' : 'This spa now requires online payment.'); loadSettlements(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function recordSettlement(spaId, net) {
+  const what = net > 0 ? `You are recording that you PAID the spa ${money(net)}.` : net < 0 ? `You are recording that the spa PAID you ${money(-net)}.` : 'Nothing is owed either way; this just closes these bookings.';
+  const ref = prompt(what + '\n\nEnter the UTR / UPI / bank reference:', '');
+  if (ref === null) return;
+  try { const r = await API.post(`/admin/spas/${spaId}/settle`, { reference: ref }); toast(r.message); loadSettlements(); loadStats(); }
+  catch (e) { toast(e.message, 'error'); }
 }
 
 const messageStatusLabel = { new: 'New', read: 'Read', resolved: 'Resolved' };

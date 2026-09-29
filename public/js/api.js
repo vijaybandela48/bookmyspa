@@ -82,7 +82,10 @@ function esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function money(n) { return '₹' + Number(n || 0).toLocaleString('en-IN'); }
+function money(n) {
+  const v = Number(n || 0);
+  return '₹' + v.toLocaleString('en-IN', Number.isInteger(v) ? {} : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 // Local calendar date as YYYY-MM-DD (toISOString() would give the UTC date, wrong before 5:30am IST).
 function localISODate(d = new Date()) {
