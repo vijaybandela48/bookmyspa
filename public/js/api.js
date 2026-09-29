@@ -156,3 +156,53 @@ async function renderFooter() {
     </div>
     <div class="wrap footer-bottom">© ${year} BookMySpa. All rights reserved.</div>`;
 }
+
+// ---------------- Shared: location, distance, ratings ----------------
+const LOC_KEY = 'bms_location';
+function savedLocation() {
+  try { const v = JSON.parse(sessionStorage.getItem(LOC_KEY)); if (v && Date.now() - v.t < 15 * 60000) return v; } catch {}
+  return null;
+}
+function saveLocation(lat, lng, label) {
+  const v = { lat, lng, label, t: Date.now() };
+  try { sessionStorage.setItem(LOC_KEY, JSON.stringify(v)); } catch {}
+  return v;
+}
+// Asks the browser for the customer's CURRENT position (fresh, high accuracy).
+function getCurrentLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('unsupported'));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve(saveLocation(p.coords.latitude, p.coords.longitude, 'your current location')),
+      (e) => reject(e), { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }); // always the customer's position right now, never a cached one
+  });
+}
+async function locationPermission() {
+  try { return (await navigator.permissions.query({ name: 'geolocation' })).state; } catch { return 'unknown'; }
+}
+function haversineKm(a, b) {
+  const R = 6371, dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+function fmtDistance(km) {
+  if (km == null) return '';
+  return km < 1 ? `${Math.max(50, Math.round(km * 1000 / 50) * 50)} m away` : `${km < 10 ? km.toFixed(1) : Math.round(km)} km away`;
+}
+function ratingHtml(spa) {
+  if (!spa.rating) return '<span class="badge approved">New</span>';
+  return `<span class="rating">★ ${spa.rating.toFixed(1)}</span> <span class="helper-text" style="margin:0">(${spa.review_count} review${spa.review_count !== 1 ? 's' : ''})</span>`;
+}
+function starsHtml(n) { return '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n); }
+let _gmapsLoad = null;
+function loadGoogleMapsApi(key) {
+  if (window.google && google.maps && google.maps.importLibrary) return Promise.resolve();
+  if (!_gmapsLoad) _gmapsLoad = new Promise((resolve, reject) => {
+    window.__bmsMapsReady = resolve;
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&callback=__bmsMapsReady&region=IN`;
+    s.async = true; s.onerror = () => reject(new Error('Google Maps could not load'));
+    document.head.appendChild(s);
+  });
+  return _gmapsLoad;
+}

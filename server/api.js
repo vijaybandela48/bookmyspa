@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, hashPassword, verifyPassword } = require('./db');
+const { db, hashPassword, verifyPassword, recomputeSpaRating } = require('./db');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
@@ -131,10 +131,11 @@ function publicSpa(s) {
   return {
     id: s.id, name: s.name, description: s.description, city: s.city, address: s.address,
     phone: s.phone, opening_time: s.opening_time, closing_time: s.closing_time,
-    status: s.status, rating: Math.round(s.rating * 10) / 10, cover_emoji: s.cover_emoji,
+    status: s.status, rating: s.rating_count ? Math.round(s.rating_avg * 10) / 10 : null, review_count: s.rating_count || 0, cover_emoji: s.cover_emoji,
     cover_image_url: cover ? cover.url : null,
     latitude: s.latitude, longitude: s.longitude,
     allow_pay_at_venue: s.allow_pay_at_venue !== 0,
+    ...featuredInfo(s.id),
     owner_id: s.owner_id,
   };
 }
@@ -210,6 +211,24 @@ function checkPortal(user, portal) {
   if (user.role === 'customer') return 'This is a customer account. Please log in on the main BookMySpa website.';
   return 'Invalid email or password.'; // never reveal that an admin account exists
 }
+
+// ---------------- FEATURED & RATINGS ----------------
+function featuredInfo(spaId) {
+  const today = localNow().date;
+  const r = db.prepare(`SELECT MAX(ends_on) AS until FROM featured_placements WHERE spa_id = ? AND cancelled = 0 AND starts_on <= ? AND ends_on >= ?`).get(spaId, today, today);
+  return { featured: !!(r && r.until), featured_until: (r && r.until) || null };
+}
+// "Top rated" uses a Bayesian average so one 5★ review can't outrank fifty 4.8★ reviews.
+const PRIOR_MEAN = 4.0, PRIOR_WEIGHT = 3;
+function ratingScore(sp) { return (PRIOR_MEAN * PRIOR_WEIGHT + (sp.rating || 0) * sp.review_count) / (PRIOR_WEIGHT + sp.review_count); }
+function reviewEligible(b) {
+  const today = localNow().date;
+  const happened = b.status === 'completed' || (b.status === 'confirmed' && b.booking_date < today);
+  const paidOk = b.payment_mode === 'pay_at_venue' || b.payment_status === 'paid';
+  const minDate = new Date(Date.parse(today + 'T00:00:00Z') - 60 * 86400000).toISOString().slice(0, 10);
+  return happened && paidOk && b.booking_date >= minDate;
+}
+function isValidDate(d) { return typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(Date.parse(d + 'T00:00:00Z')); }
 
 // ---------------- COMMISSION ----------------
 // Platform commission is a % of what the customer actually pays (after
@@ -431,7 +450,7 @@ async function handleApi(req, res, pathname, query) {
               const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
               const service = db.prepare('SELECT * FROM services WHERE id = ?').get(booking.service_id);
               if (!booking.notify_channel) {
-                await notifier.sendBookingConfirmation({ channel: 'email', booking, customer, spa, service });
+                await notifier.sendBookingConfirmations({ booking, customer, spa, service });
               }
             } catch (e) { /* non-fatal */ }
           }
@@ -588,17 +607,26 @@ async function handleApi(req, res, pathname, query) {
         return spa;
       });
 
+      const today = localNow().date;
+      const featWeight = new Map(db.prepare(
+        `SELECT spa_id, MAX(amount) AS w FROM featured_placements WHERE cancelled = 0 AND starts_on <= ? AND ends_on >= ? GROUP BY spa_id`
+      ).all(today, today).map((r) => [r.spa_id, r.w]));
+      const byScore = (a, b) => ratingScore(b) - ratingScore(a) || b.review_count - a.review_count;
       if (sort === 'nearby' && lat !== null && lng !== null) {
+        // Pure distance from the customer's current location; spas without a location go last.
         spas.sort((a, b) => {
+          if (a.distance_km === null && b.distance_km === null) return byScore(a, b);
           if (a.distance_km === null) return 1;
           if (b.distance_km === null) return -1;
-          return a.distance_km - b.distance_km;
+          return a.distance_km - b.distance_km || byScore(a, b);
         });
+      } else if (sort === 'rating') {
+        spas.sort(byScore);
       } else {
-        // featured and rating both default to rating desc for this demo (featured could
-        // later incorporate promoted/sponsored placement — rating is the honest proxy for now)
-        spas.sort((a, b) => b.rating - a.rating);
+        // Featured: spas with an active paid placement first (higher placement fee first), then by rating.
+        spas.sort((a, b) => (featWeight.has(b.id) - featWeight.has(a.id)) || ((featWeight.get(b.id) || 0) - (featWeight.get(a.id) || 0)) || byScore(a, b));
       }
+      if (query.get('featured') === '1') spas = spas.filter((s) => s.featured);
 
       return sendJSON(res, 200, { spas });
     }
@@ -729,7 +757,7 @@ async function handleApi(req, res, pathname, query) {
         let notification = null;
         try {
           const customer = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
-          notification = await notifier.sendBookingConfirmation({ channel: notifyChannel, booking, customer, spa, service });
+          notification = await notifier.sendBookingConfirmations({ booking, customer, spa, service });
           booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(booking.id);
         } catch (e) {
           notification = { status: 'failed', detail: e.message };
@@ -752,13 +780,15 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       cleanupStaleBookings();
       const rows = db.prepare(
-        `SELECT b.*, s.name as spa_name, s.city as spa_city, sv.name as service_name
+        `SELECT b.*, s.name as spa_name, s.city as spa_city, sv.name as service_name, r.rating AS my_rating, r.comment AS my_comment
          FROM bookings b
          JOIN spas s ON s.id = b.spa_id
          JOIN services sv ON sv.id = b.service_id
+         LEFT JOIN reviews r ON r.booking_id = b.id
          WHERE b.customer_id = ?
-         ORDER BY b.created_at DESC`
+         ORDER BY b.booking_date DESC, b.start_time DESC`
       ).all(user.id);
+      for (const b of rows) b.can_review = !b.my_rating && reviewEligible(b);
       return sendJSON(res, 200, { bookings: rows });
     }
 
@@ -815,7 +845,7 @@ async function handleApi(req, res, pathname, query) {
         const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
         const service = db.prepare('SELECT * FROM services WHERE id = ?').get(booking.service_id);
         try {
-          notification = await notifier.sendBookingConfirmation({ channel: notifyChannel, booking, customer, spa, service });
+          notification = await notifier.sendBookingConfirmations({ booking, customer, spa, service });
         } catch (e) {
           notification = { status: 'failed', detail: e.message };
         }
@@ -1277,6 +1307,117 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { message: `Marked as paid (${method}).` });
     }
 
+    // ---------------- REVIEWS ----------------
+    // Public: approved spa's visible reviews + summary
+    if (parts[1] === 'spas' && parts[3] === 'reviews' && req.method === 'GET') {
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const reviews = db.prepare(
+        `SELECT r.id, r.rating, r.comment, r.owner_reply, r.owner_replied_at, r.created_at, u.name AS customer_name, sv.name AS service_name, b.booking_date
+         FROM reviews r JOIN users u ON u.id = r.customer_id JOIN bookings b ON b.id = r.booking_id JOIN services sv ON sv.id = b.service_id
+         WHERE r.spa_id = ? AND r.hidden = 0 ORDER BY r.created_at DESC LIMIT 100`
+      ).all(spa.id).map((r) => ({ ...r, customer_name: (r.customer_name || 'Customer').split(' ')[0] })); // first name only, for privacy
+      const breakdown = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+      for (const row of db.prepare('SELECT rating, COUNT(*) c FROM reviews WHERE spa_id = ? AND hidden = 0 GROUP BY rating').all(spa.id)) breakdown[row.rating] = row.c;
+      return sendJSON(res, 200, { summary: { rating: spa.rating_count ? Math.round(spa.rating_avg * 10) / 10 : null, count: spa.rating_count || 0, breakdown }, reviews });
+    }
+
+    // Customer: review a visit they actually made
+    if (parts[1] === 'bookings' && parts[3] === 'review' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
+      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (db.prepare('SELECT id FROM reviews WHERE booking_id = ?').get(booking.id)) return sendJSON(res, 409, { error: 'You have already reviewed this visit.' });
+      if (!reviewEligible(booking)) return sendJSON(res, 400, { error: 'You can review a visit after your appointment (within 60 days).' });
+      const body = await parseBody(req);
+      const rating = Number(body.rating);
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) return sendJSON(res, 400, { error: 'Please choose a rating from 1 to 5 stars.' });
+      const comment = String(body.comment || '').slice(0, 1000);
+      db.prepare('INSERT INTO reviews (booking_id, spa_id, customer_id, rating, comment) VALUES (?,?,?,?,?)').run(booking.id, booking.spa_id, user.id, rating, comment);
+      recomputeSpaRating(booking.spa_id);
+      return sendJSON(res, 201, { message: 'Thanks for your review!' });
+    }
+
+    if (parts[1] === 'owner' && parts[2] === 'reviews' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const reviews = db.prepare(
+        `SELECT r.*, s.name AS spa_name, u.name AS customer_name, sv.name AS service_name, b.booking_date
+         FROM reviews r JOIN spas s ON s.id = r.spa_id JOIN users u ON u.id = r.customer_id JOIN bookings b ON b.id = r.booking_id JOIN services sv ON sv.id = b.service_id
+         WHERE s.owner_id = ? ORDER BY r.created_at DESC LIMIT 200`
+      ).all(user.id).map((r) => ({ ...r, customer_name: (r.customer_name || 'Customer').split(' ')[0] }));
+      return sendJSON(res, 200, { reviews });
+    }
+
+    if (parts[1] === 'owner' && parts[2] === 'reviews' && parts[4] === 'reply' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const review = db.prepare('SELECT r.* FROM reviews r JOIN spas s ON s.id = r.spa_id WHERE r.id = ? AND s.owner_id = ?').get(parts[3], user.id);
+      if (!review) return sendJSON(res, 404, { error: 'Review not found.' });
+      const body = await parseBody(req);
+      const reply = String(body.reply || '').slice(0, 500);
+      db.prepare("UPDATE reviews SET owner_reply = ?, owner_replied_at = datetime('now') WHERE id = ?").run(reply || null, review.id);
+      return sendJSON(res, 200, { message: reply ? 'Reply posted.' : 'Reply removed.' });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'reviews' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const reviews = db.prepare(
+        `SELECT r.*, s.name AS spa_name, u.name AS customer_name, u.email AS customer_email
+         FROM reviews r JOIN spas s ON s.id = r.spa_id JOIN users u ON u.id = r.customer_id ORDER BY r.created_at DESC LIMIT 300`
+      ).all();
+      return sendJSON(res, 200, { reviews });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'reviews' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const review = db.prepare('SELECT * FROM reviews WHERE id = ?').get(parts[3]);
+      if (!review) return sendJSON(res, 404, { error: 'Review not found.' });
+      const body = await parseBody(req);
+      db.prepare('UPDATE reviews SET hidden = ? WHERE id = ?').run(body.hidden ? 1 : 0, review.id);
+      recomputeSpaRating(review.spa_id);
+      return sendJSON(res, 200, { message: body.hidden ? 'Review hidden.' : 'Review visible again.' });
+    }
+
+    // ---------------- ADMIN: FEATURED PLACEMENTS ----------------
+    if (parts[1] === 'admin' && parts[2] === 'featured' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const today = localNow().date;
+      const placements = db.prepare(
+        `SELECT f.*, s.name AS spa_name, s.city AS spa_city, u.name AS owner_name FROM featured_placements f JOIN spas s ON s.id = f.spa_id JOIN users u ON u.id = s.owner_id ORDER BY f.starts_on DESC, f.id DESC`
+      ).all().map((f) => ({ ...f, state: f.cancelled ? 'cancelled' : f.ends_on < today ? 'expired' : f.starts_on > today ? 'upcoming' : 'active' }));
+      const spas = db.prepare("SELECT id, name, city FROM spas WHERE status = 'approved' ORDER BY name").all();
+      return sendJSON(res, 200, { placements, spas, today });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'featured' && parts.length === 3 && req.method === 'POST') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const body = await parseBody(req);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(body.spa_id);
+      if (!spa) return sendJSON(res, 400, { error: 'Choose an approved (live) spa.' });
+      if (!isValidDate(body.starts_on) || !isValidDate(body.ends_on)) return sendJSON(res, 400, { error: 'Enter valid start and end dates.' });
+      if (body.ends_on < body.starts_on) return sendJSON(res, 400, { error: 'End date must be on or after the start date.' });
+      const amount = Number(body.amount || 0);
+      if (!(amount >= 0 && amount <= 10000000)) return sendJSON(res, 400, { error: 'Enter a valid amount.' });
+      const info = db.prepare('INSERT INTO featured_placements (spa_id, starts_on, ends_on, amount, reference, note) VALUES (?,?,?,?,?,?)')
+        .run(spa.id, body.starts_on, body.ends_on, amount, String(body.reference || '').slice(0, 120), String(body.note || '').slice(0, 300));
+      return sendJSON(res, 201, { message: `${spa.name} will be featured ${body.starts_on} → ${body.ends_on}.`, id: Number(info.lastInsertRowid) });
+    }
+
+    if (parts[1] === 'admin' && parts[2] === 'featured' && parts[4] === 'cancel' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const f = db.prepare('SELECT * FROM featured_placements WHERE id = ?').get(parts[3]);
+      if (!f) return sendJSON(res, 404, { error: 'Placement not found.' });
+      db.prepare('UPDATE featured_placements SET cancelled = 1 WHERE id = ?').run(f.id);
+      return sendJSON(res, 200, { message: 'Placement cancelled.' });
+    }
+
     // ---------------- OWNER: EARNINGS & SETTLEMENTS ----------------
     if (parts[1] === 'owner' && parts[2] === 'earnings' && req.method === 'GET') {
       const user = requireAuth(req, res, ['owner']);
@@ -1506,7 +1647,9 @@ async function handleApi(req, res, pathname, query) {
       const commissionEarned = round2(db.prepare(
         `SELECT COALESCE(SUM(commission_amount),0) c FROM bookings WHERE (status = 'completed' OR (status = 'confirmed' AND booking_date < ?)) AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
       ).get(localNow().date).c);
-      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned });
+      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned,
+        featuredRevenue: round2(db.prepare('SELECT COALESCE(SUM(amount),0) a FROM featured_placements WHERE cancelled = 0').get().a),
+        activeFeatured: db.prepare('SELECT COUNT(DISTINCT spa_id) c FROM featured_placements WHERE cancelled = 0 AND starts_on <= ? AND ends_on >= ?').get(localNow().date, localNow().date).c });
     }
 
     // No route matched

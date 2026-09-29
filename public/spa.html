@@ -43,6 +43,7 @@
   </div>
 </div>
 
+<div class="wrap" id="reviewsWrap" style="display:none;padding-bottom:40px"><div class="panel" id="reviews"></div></div>
 <div id="sb-footer"></div>
 
 <script src="/js/api.js"></script>
@@ -88,17 +89,54 @@ async function loadSpa() {
           <div class="eyebrow">📍 ${spa.city}</div>
           <h1 style="font-size:30px;margin:4px 0">${spa.name}</h1>
           <p style="color:var(--ink-soft);margin:0 0 4px">${spa.description || ''}</p>
-          <p style="font-size:13.5px;color:var(--ink-soft)">${spa.address || ''} · Open ${formatTime(spa.opening_time)} – ${formatTime(spa.closing_time)} · <span class="rating">★ ${spa.rating}</span></p>
+          <p style="font-size:13.5px;color:var(--ink-soft)">${spa.address || ''} · Open ${formatTime(spa.opening_time)} – ${formatTime(spa.closing_time)} · ${ratingHtml(spa)}${(() => { const me = savedLocation(); return me && spa.latitude != null ? ` · <span class="dist">${fmtDistance(haversineKm(me, { lat: spa.latitude, lng: spa.longitude }))}</span>` : ''; })()}</p>
         </div>
       </div>
     `;
     renderGallery(media || []);
     renderLocation(spa);
+    loadReviews();
     renderServices();
     document.getElementById('mainContent').style.display = 'grid';
   } catch (e) {
     document.getElementById('spaHeader').innerHTML = `<div class="empty-state"><div class="big">🙁</div><p>${e.message}</p></div>`;
   }
+}
+
+async function loadReviews() {
+  try {
+    const { summary, reviews } = await API.get(`/spas/${spaId}/reviews`);
+    const el = document.getElementById('reviews');
+    document.getElementById('reviewsWrap').style.display = 'block';
+    if (!summary.count) {
+      el.innerHTML = '<h3>Reviews</h3><p class="helper-text" style="margin:0">No reviews yet. Reviews come only from customers who booked and visited through BookMySpa.</p>';
+      return;
+    }
+    const max = Math.max(...Object.values(summary.breakdown), 1);
+    el.innerHTML = `
+      <h3 style="margin-bottom:14px">Reviews</h3>
+      <div style="display:flex;gap:30px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <div style="text-align:center;min-width:120px">
+          <div style="font-family:Fraunces,serif;font-size:44px;font-weight:700;color:var(--moss-deep);line-height:1">${summary.rating.toFixed(1)}</div>
+          <div class="stars" style="color:var(--gold);font-size:18px">${starsHtml(Math.round(summary.rating))}</div>
+          <div class="helper-text" style="margin:2px 0 0">${summary.count} verified review${summary.count !== 1 ? 's' : ''}</div>
+        </div>
+        <div style="flex:1;min-width:220px">${[5,4,3,2,1].map(n => `
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;margin:3px 0"><span style="width:26px">${n}★</span>
+          <div class="bar"><span style="width:${(summary.breakdown[n] / max) * 100}%"></span></div><span style="width:24px;text-align:right" class="helper-text">${summary.breakdown[n]}</span></div>`).join('')}
+        </div>
+      </div>
+      ${reviews.map(r => `
+        <div class="review">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <strong>${esc(r.customer_name)} <span class="badge confirmed" style="margin-left:4px">✓ Verified visit</span></strong>
+            <span class="helper-text" style="margin:0">${formatDate(r.created_at)}</span>
+          </div>
+          <div class="stars" style="margin:4px 0">${starsHtml(r.rating)} <span class="helper-text">· ${esc(r.service_name)}</span></div>
+          ${r.comment ? `<p style="margin:6px 0 0;font-size:14.5px;line-height:1.6">${esc(r.comment)}</p>` : ''}
+          ${r.owner_reply ? `<div class="owner-reply"><strong>Response from the spa:</strong> ${esc(r.owner_reply)}</div>` : ''}
+        </div>`).join('')}`;
+  } catch { /* reviews are non-critical */ }
 }
 
 async function renderLocation(spa) {
@@ -266,12 +304,7 @@ async function openPayModal() {
       </select>
     </div>
     <p class="helper-text" id="venueHint" style="display:none;margin-top:8px">Your slot is reserved right away — pay by cash, card or UPI when you arrive.</p>
-    <label>Send booking confirmation via</label>
-    <select id="notifyChannel">
-      <option value="email">✉️ Email (${user.email})</option>
-      <option value="sms">💬 SMS (${user.phone || 'no phone on file'})</option>
-      <option value="whatsapp">🟢 WhatsApp (${user.phone || 'no phone on file'})</option>
-    </select>
+    <p class="helper-text" style="margin-top:14px">📩 Your confirmation will be sent by <strong>SMS and WhatsApp</strong> to ${esc(user.phone || 'your mobile number')}.</p>
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn outline block" onclick="closePayModal()">Cancel</button>
       <button class="btn gold block" id="confirmPayBtn" onclick="confirmBooking()">Pay &amp; confirm</button>
@@ -345,7 +378,7 @@ function closePayModal() { document.getElementById('payModal').classList.remove(
 
 async function confirmBooking() {
   const btn = document.getElementById('confirmPayBtn');
-  const notifyChannel = document.getElementById('notifyChannel').value;
+  const notifyChannel = 'all';
   btn.disabled = true; btn.textContent = 'Processing…';
   try {
     const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode, notifyChannel };
@@ -413,7 +446,7 @@ async function finishVerification(bookingId, payload) {
   try {
     const result = await API.post(`/bookings/${bookingId}/verify`, payload);
     if (result.success) {
-      const channelLabel = { email: 'email', sms: 'SMS', whatsapp: 'WhatsApp' }[payload.notifyChannel];
+      const channelLabel = 'SMS & WhatsApp';
       toast(`Payment successful! Confirmation sent via ${channelLabel}.`);
       closePayModal();
       setTimeout(() => window.location.href = '/account.html', 900);

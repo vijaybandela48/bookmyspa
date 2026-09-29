@@ -299,3 +299,19 @@ label:first-child { margin-top: 0; }
 .feature-card .ico { font-size: 28px; margin-bottom: 8px; }
 .feature-card h3 { font-size: 17px; }
 .feature-card p { font-size: 14px; color: var(--ink-soft); margin: 0; }
+
+/* ---------- Location bar, featured strip, reviews ---------- */
+.loc-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:var(--white); border:1px solid var(--line); border-radius:var(--radius); padding:14px 18px; margin-bottom:22px; box-shadow:var(--shadow); }
+.loc-bar .loc-text { font-size:14.5px; color:var(--ink); }
+.loc-bar gmp-place-autocomplete { min-width:260px; }
+.featured-strip { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(260px, 300px); gap:16px; overflow-x:auto; padding-bottom:8px; margin-bottom:30px; }
+.feat-badge { position:absolute; top:10px; left:10px; background:var(--gold); color:var(--moss-deep); font-size:11px; font-weight:800; padding:4px 10px; border-radius:999px; letter-spacing:.04em; }
+.spa-card .cover { position:relative; }
+.dist { color:var(--moss); font-weight:700; }
+.review { border-top:1px solid var(--line); padding:16px 0; }
+.review:first-child { border-top:none; }
+.review .stars, .star-input button { color:var(--gold); letter-spacing:2px; }
+.owner-reply { background:var(--stone); border-left:3px solid var(--moss-soft); padding:10px 14px; margin-top:10px; border-radius:6px; font-size:14px; }
+.bar { height:8px; background:var(--stone-dark); border-radius:99px; overflow:hidden; flex:1; }
+.bar > span { display:block; height:100%; background:var(--gold); }
+.star-input button { background:none; border:none; font-size:34px; padding:0 3px; cursor:pointer; }

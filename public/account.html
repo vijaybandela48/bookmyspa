@@ -18,6 +18,22 @@
   <div id="list" style="margin-top:20px"><p>Loading…</p></div>
 </div>
 
+<div class="modal-overlay" id="reviewModal">
+  <div class="modal">
+    <h3 id="rvTitle">How was your visit?</h3>
+    <div class="star-input" id="rvStars" style="margin:8px 0 2px">
+      <button type="button" onclick="setStars(1)" aria-label="1 star">☆</button><button type="button" onclick="setStars(2)" aria-label="2 stars">☆</button><button type="button" onclick="setStars(3)" aria-label="3 stars">☆</button><button type="button" onclick="setStars(4)" aria-label="4 stars">☆</button><button type="button" onclick="setStars(5)" aria-label="5 stars">☆</button>
+    </div>
+    <p class="helper-text" id="rvLabel" style="margin:0 0 10px">Tap a star</p>
+    <label for="rvComment">Tell others about it (optional)</label>
+    <textarea id="rvComment" rows="4" maxlength="1000" placeholder="Therapist, cleanliness, ambience, value for money…"></textarea>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn outline block" onclick="closeReview()">Cancel</button>
+      <button class="btn gold block" id="rvSubmit" onclick="submitReview()">Post review</button>
+    </div>
+    <p class="helper-text" style="margin-top:10px">Your first name and review will be shown publicly as a verified visit.</p>
+  </div>
+</div>
 <div id="sb-footer"></div>
 
 <script src="/js/api.js"></script>
@@ -39,7 +55,7 @@ async function load() {
     }
     list.innerHTML = bookings.map(b => {
       const d = new Date(b.booking_date + 'T00:00:00');
-      const canCancel = ['pending_payment', 'confirmed'].includes(b.status);
+      const canCancel = ['pending_payment', 'confirmed'].includes(b.status) && b.booking_date >= localISODate();
       return `
       <div class="ticket">
         <div class="stub">
@@ -59,7 +75,9 @@ async function load() {
             <span class="badge ${b.status}">${statusLabel[b.status]}</span>
             ${b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' ? `<span class="badge pending">Pay ${money(b.amount)} at the spa</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
-            ${b.status === 'confirmed' && b.notify_channel ? `<span class="helper-text" style="margin:0">${{email:'✉️ Email',sms:'💬 SMS',whatsapp:'🟢 WhatsApp'}[b.notify_channel]} sent</span>` : ''}
+            ${b.notify_channel ? `<span class="helper-text" style="margin:0">📩 Sent by ${b.notify_channel.split(',').map(c => ({ sms: 'SMS', whatsapp: 'WhatsApp', email: 'Email' })[c] || c).join(' & ')}</span>` : ''}
+            ${b.my_rating ? `<span class="stars" style="color:var(--gold)" title="Your rating">${starsHtml(b.my_rating)}</span>` : ''}
+            ${b.can_review ? `<button class="btn small gold" onclick="openReview(${b.id}, '${esc(b.spa_name).replace(/'/g, '')}')">⭐ Rate your visit</button>` : ''}
             ${b.status === 'pending_payment' ? `<a class="btn small gold" href="/spa.html?id=${b.spa_id}">Pay now</a>` : ''}
             ${canCancel ? `<button class="btn small outline" onclick="cancelBooking(${b.id})">Cancel</button>` : ''}
           </div>
@@ -81,6 +99,30 @@ async function cancelBooking(id) {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+let reviewBookingId = null, reviewRating = 0;
+function openReview(id, spaName) {
+  reviewBookingId = id; reviewRating = 0;
+  document.getElementById('rvTitle').textContent = 'How was your visit to ' + spaName + '?';
+  document.getElementById('rvComment').value = '';
+  paintStars();
+  document.getElementById('reviewModal').classList.add('open');
+}
+function closeReview() { document.getElementById('reviewModal').classList.remove('open'); }
+function paintStars() {
+  document.querySelectorAll('#rvStars button').forEach((b, i) => { b.textContent = i < reviewRating ? '★' : '☆'; });
+  document.getElementById('rvLabel').textContent = ['Tap a star', 'Poor', 'Below average', 'Good', 'Very good', 'Excellent'][reviewRating];
+}
+function setStars(n) { reviewRating = n; paintStars(); }
+async function submitReview() {
+  if (!reviewRating) return toast('Please choose a star rating.', 'error');
+  const btn = document.getElementById('rvSubmit'); btn.disabled = true;
+  try {
+    const r = await API.post(`/bookings/${reviewBookingId}/review`, { rating: reviewRating, comment: document.getElementById('rvComment').value.trim() });
+    toast(r.message); closeReview(); load();
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; }
 }
 
 if (AUTH_OK) load();

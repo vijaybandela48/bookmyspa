@@ -213,7 +213,47 @@ CREATE TABLE IF NOT EXISTS settlements (
   note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Verified reviews: one per completed booking, only by the customer who visited.
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),
+  spa_id INTEGER NOT NULL REFERENCES spas(id),
+  customer_id INTEGER NOT NULL REFERENCES users(id),
+  rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+  comment TEXT,
+  owner_reply TEXT,
+  owner_replied_at TEXT,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_spa ON reviews(spa_id);
+
+-- Paid "Featured" placements, controlled by admin, for a date range.
+CREATE TABLE IF NOT EXISTS featured_placements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  spa_id INTEGER NOT NULL REFERENCES spas(id),
+  starts_on TEXT NOT NULL,
+  ends_on TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  reference TEXT,
+  note TEXT,
+  cancelled INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
+
+try {
+  const cols = db.prepare("PRAGMA table_info(spas)").all().map((c) => c.name);
+  if (!cols.includes('rating_avg')) db.exec('ALTER TABLE spas ADD COLUMN rating_avg REAL');
+  if (!cols.includes('rating_count')) db.exec('ALTER TABLE spas ADD COLUMN rating_count INTEGER NOT NULL DEFAULT 0');
+} catch (e) { console.error('Migration error:', e.message); }
+
+// Spa ratings come ONLY from visible, verified reviews (the old demo star values are ignored).
+function recomputeSpaRating(spaId) {
+  const r = db.prepare('SELECT AVG(rating) AS avg, COUNT(*) AS n FROM reviews WHERE spa_id = ? AND hidden = 0').get(spaId);
+  db.prepare('UPDATE spas SET rating_avg = ?, rating_count = ? WHERE id = ?').run(r.n ? r.avg : null, r.n || 0, spaId);
+}
 
 // OTP login requires looking a user up by phone, so phone numbers need to be
 // unique. This is best-effort: if an existing deployment already has
@@ -335,6 +375,24 @@ function seedDemoData(mkUser) {
 
   mkService(spa4, 'Couples Massage', 'Side-by-side relaxation for two.', 60, 3999);
 
+  // Demo reviews attached to real past, completed demo bookings (development data only).
+  const pastDate = (d) => new Date(Date.now() + 330 * 60000 - d * 86400000).toISOString().slice(0, 10);
+  const demoReviews = [
+    [spa1, 1, 1614, 5, 'Very relaxing Swedish massage. The therapist was professional and the room was spotless.', 12],
+    [spa1, 3, 1499, 4, 'Good facial and my skin felt fresh, but I waited about 10 minutes past my slot.', 20],
+    [spa2, 5, 1979, 5, 'Best sports massage around Jubilee Hills. It really sorted out my shoulder.', 8],
+    [spa3, 7, 1799, 4, 'Authentic Abhyanga with lovely warm oils. Parking nearby is tricky.', 15],
+  ];
+  for (const [spaId, serviceId, amount, rating, comment, daysAgo] of demoReviews) {
+    const b = db.prepare(`INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, status, payment_status, payment_mode)
+      VALUES (?,?,?,?,'11:00','12:00',?,'completed','paid','pay_at_venue')`).run(cust1, spaId, serviceId, pastDate(daysAgo), amount);
+    db.prepare('INSERT INTO reviews (booking_id, spa_id, customer_id, rating, comment) VALUES (?,?,?,?,?)').run(Number(b.lastInsertRowid), spaId, cust1, rating, comment);
+  }
+  [spa1, spa2, spa3, spa4].forEach(recomputeSpaRating);
+  // Demo featured placement so the homepage shows how Featured looks
+  db.prepare('INSERT INTO featured_placements (spa_id, starts_on, ends_on, amount, reference, note) VALUES (?,?,?,?,?,?)')
+    .run(spa3, pastDate(3), pastDate(-27), 2999, 'DEMO', 'Demo 30-day placement');
+
   console.log('Seed complete. Demo logins:');
   console.log('  admin@bookmyspa.demo / admin123 (admin)');
   console.log('  owner1@bookmyspa.demo / owner123 (spa owner - Hyderabad spas)');
@@ -344,4 +402,4 @@ function seedDemoData(mkUser) {
 
 seed();
 
-module.exports = { db, hashPassword, verifyPassword };
+module.exports = { db, hashPassword, verifyPassword, recomputeSpaRating };

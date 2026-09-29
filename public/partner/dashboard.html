@@ -20,6 +20,7 @@
     <div class="tab active" data-tab="spas" onclick="switchTab('spas')">My spas</div>
     <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">Bookings</div>
     <div class="tab" data-tab="earnings" onclick="switchTab('earnings')">💰 Earnings</div>
+    <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">⭐ Reviews</div>
   </div>
 
   <div id="tab-spas">
@@ -167,6 +168,10 @@
   <div id="tab-earnings" style="display:none">
     <div id="earnings"><p>Loading…</p></div>
   </div>
+
+  <div id="tab-reviews" style="display:none">
+    <div id="ownerReviews"><p>Loading…</p></div>
+  </div>
 </div>
 
 <!-- Location picker -->
@@ -210,6 +215,8 @@ function switchTab(name) {
   document.getElementById('tab-spas').style.display = name === 'spas' ? 'block' : 'none';
   document.getElementById('tab-bookings').style.display = name === 'bookings' ? 'block' : 'none';
   document.getElementById('tab-earnings').style.display = name === 'earnings' ? 'block' : 'none';
+  document.getElementById('tab-reviews').style.display = name === 'reviews' ? 'block' : 'none';
+  if (name === 'reviews') loadOwnerReviews();
   if (name === 'bookings') loadOwnerBookings();
   if (name === 'earnings') loadEarnings();
 }
@@ -237,7 +244,7 @@ async function loadSpas() {
             <h3 style="margin-bottom:4px">${s.cover_emoji} ${s.name}</h3>
             <div class="helper-text">${s.city} ${s.address ? '· ' + s.address : ''}</div>
           </div>
-          ${statusBadge(s.status)}
+          ${statusBadge(s.status)}${s.featured ? `<span class="badge pending" style="margin-left:6px">⭐ Featured until ${formatDate(s.featured_until)}</span>` : ''}
         </div>
         <p style="font-size:14px;color:var(--ink-soft);margin:10px 0">${s.description || ''}</p>
         <p class="helper-text" style="margin-bottom:10px">
@@ -912,6 +919,35 @@ async function loadEarnings() {
           <td style="padding:10px 14px">${h.direction === 'payout_to_spa' ? 'Paid to you ' + money(h.amount) : h.direction === 'collected_from_spa' ? 'You paid ' + money(h.amount) : 'Nothing owed'}</td>
           <td style="padding:10px 14px" class="mono helper-text">${esc(h.reference || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No settlements yet.</p>'}`;
   } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+
+// ---------------- Reviews ----------------
+async function loadOwnerReviews() {
+  const el = document.getElementById('ownerReviews');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { reviews } = await API.get('/owner/reviews');
+    const ratings = mySpas.filter(s => s.review_count).map(s => `<div class="stat-card"><div class="num" style="font-size:22px">★ ${s.rating.toFixed(1)}</div><div class="label">${esc(s.name)} · ${s.review_count} reviews</div></div>`).join('');
+    el.innerHTML = `
+      ${ratings ? `<div class="stat-grid">${ratings}</div>` : ''}
+      <div class="panel" style="margin-bottom:14px"><p class="helper-text" style="margin:0">Only customers who booked and visited through BookMySpa can review you. A short, polite public reply — especially to critical reviews — builds trust with future customers. Want more visibility? Ask us about <a href="/contact.html" style="color:var(--moss);font-weight:700">Featured placement</a>.</p></div>
+      ${reviews.length ? reviews.map(r => `
+        <div class="panel" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <strong>${esc(r.customer_name)} · <span style="color:var(--gold)">${starsHtml(r.rating)}</span></strong>
+            <span class="helper-text" style="margin:0">${esc(r.spa_name)} · ${esc(r.service_name)} · ${formatDate(r.created_at)}${r.hidden ? ' · <span class="badge cancelled">hidden by admin</span>' : ''}</span>
+          </div>
+          ${r.comment ? `<p style="margin:8px 0 0;font-size:14.5px">${esc(r.comment)}</p>` : '<p class="helper-text">(No written comment)</p>'}
+          ${r.owner_reply ? `<div class="owner-reply"><strong>Your reply:</strong> ${esc(r.owner_reply)}</div>` : ''}
+          <button class="btn small outline" style="margin-top:10px" onclick="replyReview(${r.id})">${r.owner_reply ? 'Edit reply' : 'Reply publicly'}</button>
+        </div>`).join('') : '<div class="empty-state"><div class="big">⭐</div><p>No reviews yet. They appear after customers visit.</p></div>'}`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function replyReview(id) {
+  const reply = prompt('Your public reply (max 500 characters). Leave empty to remove your reply.');
+  if (reply === null) return;
+  try { const r = await API.put(`/owner/reviews/${id}/reply`, { reply }); toast(r.message); loadOwnerReviews(); }
+  catch (e) { toast(e.message, 'error'); }
 }
 
 if (AUTH_OK) loadSpas();

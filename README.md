@@ -80,7 +80,8 @@ each feature on automatically.
 | `NODE_ENV=production`, `TOKEN_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Required in production (see below) |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Real online payments. Until set, production offers pay-at-spa only |
 | `MSG91_AUTH_KEY`, `MSG91_OTP_TEMPLATE_ID` | OTP by SMS via MSG91 (India). Until set, production skips OTP |
-| `MSG91_BOOKING_TEMPLATE_ID` | Booking-confirmation SMS via MSG91 Flow. Template variables: `##name## ##service## ##spa## ##date## ##time## ##amount##` |
+| `MSG91_BOOKING_TEMPLATE_ID` | Booking-confirmation SMS via MSG91 Flow. Variables: `##name## ##service## ##spa## ##date## ##time## ##amount## ##payment##` |
+| `MSG91_WHATSAPP_NUMBER`, `MSG91_WHATSAPP_TEMPLATE` (+ optional `MSG91_WHATSAPP_LANG`, `MSG91_WHATSAPP_NAMESPACE`) | Booking confirmation on WhatsApp via MSG91. Template body has 7 variables in order: name, service, spa, date, time, payment, directions link |
 | `GOOGLE_MAPS_API_KEY` | Search + draggable map for owners, official embedded map for customers |
 | `COMMISSION_PERCENT` | Default platform commission (default 10). Per-spa overrides in Admin → Commission & payouts |
 | `PARTNER_URL` | Public URL of the partner portal, e.g. `https://partner.bookmyspa.in` |
@@ -99,6 +100,13 @@ is visible in the browser; that is normal for Maps. Without a key,
 owners can still set their location by pasting a Google Maps share link or
 using their phone's GPS, and customers still get an embedded map and
 **Get directions**.
+
+## Booking confirmations, reviews, featured spas
+
+- **Confirmations** go out on **SMS and WhatsApp** for every booking (plus email if `RESEND_API_KEY` is set). Each channel works independently — if WhatsApp isn't configured or fails, SMS still goes.
+- **Reviews** can only be written by the customer who booked and visited (one per booking, within 60 days of the appointment). Spa ratings are calculated live from visible reviews; spas with none show "New". "Top rated" uses a weighted average so a single 5★ review can't outrank many strong ones. Owners can reply publicly; admins can hide abusive reviews (which recalculates the rating).
+- **Featured spas** are sold by the admin for a date range (Admin → ⭐ Featured). Live placements get a "Featured" badge, lead the Featured sort (higher placement fee first), and appear in the homepage Featured strip — but only to customers within 30 km, so placements act as local advertising. They're labelled "Promoted listings".
+- **Nearby** always uses the customer's position right now (fresh GPS reading, never cached) and sorts purely by distance; customers can also pick an area by search if a Google Maps key is set.
 
 ## Commission
 

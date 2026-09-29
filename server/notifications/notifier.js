@@ -112,12 +112,19 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     result = msg91SmsConfigured
       ? await msg91SendFlow(recipient, process.env.MSG91_BOOKING_TEMPLATE_ID, {
           name: customer.name.split(' ')[0], service: service.name, spa: spa.name,
-          date: booking.booking_date, time: booking.start_time, amount: String(booking.amount),
+          date: prettyDate(booking.booking_date), time: prettyTime(booking.start_time), amount: String(booking.amount),
+          payment: booking.payment_mode === 'pay_at_venue' ? 'payable at the spa' : 'paid',
         })
       : await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_SMS_FROM });
   } else if (channel === 'whatsapp') {
     recipient = customer.phone;
-    result = await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_WHATSAPP_FROM, channelPrefix: 'whatsapp:' });
+    result = msg91WhatsappConfigured
+      ? await msg91SendWhatsapp(recipient, [
+          customer.name.split(' ')[0], service.name, spa.name, prettyDate(booking.booking_date), prettyTime(booking.start_time),
+          booking.payment_mode === 'pay_at_venue' ? `Rs. ${booking.amount} payable at the spa` : `Rs. ${booking.amount} paid`,
+          spa.latitude != null ? `https://www.google.com/maps/dir/?api=1&destination=${spa.latitude},${spa.longitude}` : (spa.address || spa.city),
+        ])
+      : await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_WHATSAPP_FROM, channelPrefix: 'whatsapp:' });
   } else {
     result = { status: 'failed', detail: 'Unknown channel' };
     recipient = '';
@@ -127,10 +134,67 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     'INSERT INTO notifications (booking_id, channel, recipient, message, status, detail) VALUES (?,?,?,?,?,?)'
   ).run(booking.id, channel, recipient || '', message, result.status, result.detail);
 
-  db.prepare('UPDATE bookings SET notify_channel = ?, notify_status = ? WHERE id = ?')
-    .run(channel, result.status, booking.id);
-
   return result;
+}
+
+function prettyDate(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return isNaN(d) ? iso : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+function prettyTime(t) {
+  const [h, m] = String(t).split(':').map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+// ---- MSG91 WhatsApp ----
+//   MSG91_WHATSAPP_NUMBER     your WhatsApp number integrated in MSG91, with country code (e.g. 9198xxxxxxxx)
+//   MSG91_WHATSAPP_TEMPLATE   name of your Meta-approved booking template (7 body variables, in order:
+//                             name, service, spa, date, time, payment, directions link)
+//   MSG91_WHATSAPP_LANG       template language code (default "en")
+//   MSG91_WHATSAPP_NAMESPACE  template namespace, if MSG91 shows one for your template (optional)
+const msg91WhatsappConfigured = !!(process.env.MSG91_AUTH_KEY && process.env.MSG91_WHATSAPP_NUMBER && process.env.MSG91_WHATSAPP_TEMPLATE);
+async function msg91SendWhatsapp(phone, values) {
+  const components = {};
+  values.forEach((v, i) => { components[`body_${i + 1}`] = { type: 'text', value: String(v) }; });
+  try {
+    const res = await fetch('https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/', {
+      method: 'POST',
+      headers: { authkey: process.env.MSG91_AUTH_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integrated_number: process.env.MSG91_WHATSAPP_NUMBER,
+        content_type: 'template',
+        payload: {
+          messaging_product: 'whatsapp', type: 'template',
+          template: {
+            name: process.env.MSG91_WHATSAPP_TEMPLATE,
+            language: { code: process.env.MSG91_WHATSAPP_LANG || 'en', policy: 'deterministic' },
+            namespace: process.env.MSG91_WHATSAPP_NAMESPACE || null,
+            to_and_components: [{ to: [toMsg91Mobile(phone)], components }],
+          },
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'fail' || data.type === 'error' || data.hasError) return { status: 'failed', detail: 'MSG91 WhatsApp error: ' + (data.message || data.errors || res.status) };
+    return { status: 'sent', detail: 'Sent via MSG91 WhatsApp' };
+  } catch (e) {
+    return { status: 'failed', detail: e.message };
+  }
+}
+
+// Sends the booking confirmation on EVERY channel: SMS + WhatsApp always, email too if configured.
+async function sendBookingConfirmations(ctx) {
+  const channels = ['sms', 'whatsapp'];
+  if (process.env.RESEND_API_KEY && ctx.customer.email) channels.push('email');
+  const results = {};
+  for (const ch of channels) {
+    try { results[ch] = await sendBookingConfirmation({ channel: ch, ...ctx }); }
+    catch (e) { results[ch] = { status: 'failed', detail: e.message }; }
+  }
+  const st = Object.values(results).map((r) => r.status);
+  const overall = st.includes('sent') ? 'sent' : st.includes('mocked') ? 'mocked' : 'failed';
+  db.prepare('UPDATE bookings SET notify_channel = ?, notify_status = ? WHERE id = ?').run(channels.join(','), overall, ctx.booking.id);
+  return { status: overall, channels: results };
 }
 
 // ---- MSG91 (recommended for India) ----
@@ -200,4 +264,4 @@ async function sendOtpSms(phone, code) {
   return result;
 }
 
-module.exports = { sendBookingConfirmation, sendOtpSms, isSmsConfigured, toMsg91Mobile };
+module.exports = { sendBookingConfirmation, sendBookingConfirmations, sendOtpSms, isSmsConfigured, toMsg91Mobile, msg91WhatsappConfigured };

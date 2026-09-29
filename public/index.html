@@ -29,18 +29,27 @@
 </svg>
 
 <div class="wrap page-body">
-  <div class="section-title-row">
-    <div>
-      <div class="eyebrow" id="resultsEyebrow">Featured</div>
-      <h2 style="margin-top:4px">Spas open for booking</h2>
+  <div class="loc-bar" id="locBar">
+    <span class="loc-text" id="locText">📍 Finding spas near you…</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap" id="locActions"></div>
+  </div>
+
+  <div id="featuredWrap" style="display:none">
+    <div class="section-title-row" style="margin-top:0">
+      <div><div class="eyebrow">⭐ Featured</div><h2 style="margin-top:4px">Featured spas</h2></div>
+      <span class="helper-text">Promoted listings</span>
     </div>
+    <div class="featured-strip" id="featuredStrip"></div>
+  </div>
+
+  <div class="section-title-row" style="margin-top:0">
+    <div><div class="eyebrow" id="resultsEyebrow">Featured</div><h2 style="margin-top:4px">Spas open for booking</h2></div>
   </div>
   <div class="tabs">
-    <div class="tab active" data-sort="featured" onclick="setSortMode('featured')">Featured</div>
-    <div class="tab" data-sort="rating" onclick="setSortMode('rating')">Top rated</div>
     <div class="tab" data-sort="nearby" onclick="setSortMode('nearby')">📍 Nearby</div>
+    <div class="tab" data-sort="featured" onclick="setSortMode('featured')">⭐ Featured</div>
+    <div class="tab" data-sort="rating" onclick="setSortMode('rating')">🏆 Top rated</div>
   </div>
-  <p class="helper-text" id="locationHint" style="display:none;margin:-10px 0 16px"></p>
   <div class="grid" id="spaGrid"><p>Loading spas…</p></div>
 </div>
 
@@ -51,119 +60,138 @@
 renderNav('home');
 renderFooter();
 
+const FEATURED_RADIUS_KM = 30;
+let userLocation = savedLocation();
+let sortMode = userLocation ? 'nearby' : 'featured';
+
 async function loadCities() {
   try {
     const { cities } = await API.get('/spas/cities');
     const sel = document.getElementById('cityInput');
-    cities.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c; opt.textContent = c;
-      sel.appendChild(opt);
-    });
-  } catch (e) {}
+    cities.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+  } catch {}
 }
 
 function spaCard(spa) {
-  const coverInner = spa.cover_image_url
-    ? `<img src="${spa.cover_image_url}" alt="${spa.name}" style="width:100%;height:100%;object-fit:cover">`
-    : spa.cover_emoji;
+  const cover = spa.cover_image_url ? `<img src="${esc(spa.cover_image_url)}" alt="${esc(spa.name)}" style="width:100%;height:100%;object-fit:cover">` : esc(spa.cover_emoji);
   return `
     <a class="spa-card" href="/spa.html?id=${spa.id}">
-      <div class="cover" style="${spa.cover_image_url ? 'padding:0' : ''}">${coverInner}</div>
+      <div class="cover" style="${spa.cover_image_url ? 'padding:0' : ''}">${cover}${spa.featured ? '<span class="feat-badge">⭐ FEATURED</span>' : ''}</div>
       <div class="body">
-        <h3>${spa.name}</h3>
-        <div class="meta">📍 ${spa.city}${spa.address ? ' · ' + spa.address : ''}${spa.distance_km !== null && spa.distance_km !== undefined ? ` · <strong style="color:var(--moss)">${spa.distance_km} km away</strong>` : ''}</div>
-        <div class="desc">${spa.description || ''}</div>
-        <div class="foot">
-          <span class="rating">★ ${spa.rating}</span>
-          <span class="btn small outline">View services</span>
-        </div>
+        <h3>${esc(spa.name)}</h3>
+        <div class="meta">📍 ${esc(spa.address || spa.city)}${spa.distance_km != null ? ` · <span class="dist">${fmtDistance(spa.distance_km)}</span>` : ''}</div>
+        <div class="desc">${esc(spa.description || '')}</div>
+        <div class="foot"><span>${ratingHtml(spa)}</span><span class="btn small outline">View services</span></div>
       </div>
-    </a>
-  `;
+    </a>`;
 }
 
-let sortMode = 'featured';
-let userLocation = null; // { lat, lng }
+function spaQuery(extra = {}) {
+  const p = new URLSearchParams();
+  const city = document.getElementById('cityInput').value, search = document.getElementById('searchInput').value.trim();
+  if (city) p.set('city', city);
+  if (search) p.set('search', search);
+  if (userLocation) { p.set('lat', userLocation.lat); p.set('lng', userLocation.lng); }
+  for (const [k, v] of Object.entries(extra)) p.set(k, v);
+  return '/spas?' + p.toString();
+}
 
-async function loadSpas(city = '', search = '') {
+async function loadFeatured() {
+  try {
+    let { spas } = await API.get(spaQuery({ sort: 'featured', featured: '1' }));
+    // Featured placements are local advertising: when we know where the customer is,
+    // only show featured spas within FEATURED_RADIUS_KM, nearest first.
+    if (userLocation) spas = spas.filter(s => s.distance_km != null && s.distance_km <= FEATURED_RADIUS_KM).sort((a, b) => a.distance_km - b.distance_km);
+    document.getElementById('featuredWrap').style.display = spas.length ? 'block' : 'none';
+    document.getElementById('featuredStrip').innerHTML = spas.map(spaCard).join('');
+  } catch { document.getElementById('featuredWrap').style.display = 'none'; }
+}
+
+async function loadSpas() {
   const grid = document.getElementById('spaGrid');
   grid.innerHTML = '<p>Loading spas…</p>';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === sortMode));
+  document.getElementById('resultsEyebrow').textContent =
+    sortMode === 'nearby' ? `Nearest first · from ${userLocation ? userLocation.label : 'you'}` : sortMode === 'rating' ? 'Top rated by customers' : 'Featured first';
   try {
-    const params = new URLSearchParams();
-    if (city) params.set('city', city);
-    if (search) params.set('search', search);
-    params.set('sort', sortMode);
-    if (userLocation) {
-      params.set('lat', userLocation.lat);
-      params.set('lng', userLocation.lng);
-    }
-    const { spas } = await API.get('/spas?' + params.toString());
-    if (!spas.length) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">🧴</div><p>No spas found. Try a different search.</p></div>`;
-      return;
-    }
-    grid.innerHTML = spas.map(spaCard).join('');
-  } catch (e) {
-    grid.innerHTML = `<p>Could not load spas: ${e.message}</p>`;
+    const { spas } = await API.get(spaQuery({ sort: sortMode }));
+    grid.innerHTML = spas.length ? spas.map(spaCard).join('')
+      : `<div class="empty-state" style="grid-column:1/-1"><div class="big">🧴</div><p>No spas found. Try a different search or city.</p></div>`;
+  } catch (e) { grid.innerHTML = `<p>Could not load spas: ${esc(e.message)}</p>`; }
+}
+
+function renderLocBar(state) {
+  const text = document.getElementById('locText'), actions = document.getElementById('locActions');
+  if (state === 'have') {
+    text.innerHTML = `📍 Showing distances from <strong>${esc(userLocation.label)}</strong>`;
+    actions.innerHTML = `<button class="btn small outline" onclick="useMyLocation()">↻ Refresh my location</button><button class="btn small outline" onclick="showAreaSearch()">Change area</button>`;
+  } else if (state === 'denied') {
+    text.innerHTML = '📍 Location is off. Allow location for this site in your browser settings to see the nearest spas — or pick an area.';
+    actions.innerHTML = `<button class="btn small gold" onclick="useMyLocation()">Try again</button><button class="btn small outline" onclick="showAreaSearch()">Pick an area</button>`;
+  } else if (state === 'locating') {
+    text.innerHTML = '📍 Getting your current location…'; actions.innerHTML = '';
+  } else {
+    text.innerHTML = '📍 See the spas closest to you right now';
+    actions.innerHTML = `<button class="btn small gold" onclick="useMyLocation()">Use my current location</button><button class="btn small outline" onclick="showAreaSearch()">Pick an area</button>`;
   }
+}
+
+async function useMyLocation() {
+  renderLocBar('locating');
+  try {
+    userLocation = await getCurrentLocation();
+    sortMode = 'nearby';
+    renderLocBar('have'); loadSpas(); loadFeatured();
+  } catch (e) {
+    renderLocBar(e && e.code === 1 ? 'denied' : 'ask');
+    if (!(e && e.code === 1)) toast("Couldn't get your location. Pick an area instead.", 'error');
+  }
+}
+
+async function showAreaSearch() {
+  const cfg = await getConfig();
+  const actions = document.getElementById('locActions');
+  if (!cfg.googleMapsKey) {
+    toast('Choose your city from the search bar above to filter spas.');
+    document.getElementById('cityInput').focus();
+    return;
+  }
+  try {
+    await loadGoogleMapsApi(cfg.googleMapsKey);
+    const { PlaceAutocompleteElement } = await google.maps.importLibrary('places');
+    const ac = new PlaceAutocompleteElement({ includedRegionCodes: ['in'] });
+    ac.setAttribute('placeholder', 'Search your area, e.g. Banjara Hills');
+    actions.innerHTML = ''; actions.appendChild(ac);
+    ac.addEventListener('gmp-select', async ({ placePrediction }) => {
+      const place = placePrediction.toPlace();
+      await place.fetchFields({ fields: ['displayName', 'location'] });
+      userLocation = saveLocation(place.location.lat(), place.location.lng(), place.displayName || 'selected area');
+      sortMode = 'nearby'; renderLocBar('have'); loadSpas(); loadFeatured();
+    });
+  } catch { toast('Area search is unavailable right now. Use the city filter instead.', 'error'); }
 }
 
 function setSortMode(mode) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === mode));
-  const hint = document.getElementById('locationHint');
-
-  if (mode === 'nearby' && !userLocation) {
-    if (!navigator.geolocation) {
-      hint.style.display = 'block';
-      hint.textContent = "Your browser doesn't support location access — showing featured spas instead.";
-      hint.style.color = 'var(--plum)';
-      sortMode = 'featured';
-      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === 'featured'));
-      loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
-      return;
-    }
-    hint.style.display = 'block';
-    hint.textContent = '📍 Requesting your location…';
-    hint.style.color = '';
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        hint.style.display = 'none';
-        sortMode = 'nearby';
-        document.getElementById('resultsEyebrow').textContent = 'Nearby';
-        loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
-      },
-      (err) => {
-        hint.textContent = err.code === 1
-          ? "Location permission denied — showing featured spas instead. You can allow location access and try again anytime."
-          : "Couldn't get your location — showing featured spas instead.";
-        hint.style.color = 'var(--plum)';
-        sortMode = 'featured';
-        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === 'featured'));
-        loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-    return;
-  }
-
-  sortMode = mode;
-  document.getElementById('resultsEyebrow').textContent = mode === 'nearby' ? 'Nearby' : mode === 'rating' ? 'Top rated' : 'Featured';
-  loadSpas(document.getElementById('cityInput').value, document.getElementById('searchInput').value.trim());
+  if (mode === 'nearby' && !userLocation) { useMyLocation(); return; }
+  sortMode = mode; loadSpas();
 }
-
-function doSearch() {
-  const search = document.getElementById('searchInput').value.trim();
-  const city = document.getElementById('cityInput').value;
-  if (search || city) document.getElementById('resultsEyebrow').textContent = 'Search results';
-  loadSpas(city, search);
-}
+function doSearch() { loadSpas(); loadFeatured(); }
 document.getElementById('searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
 document.getElementById('cityInput').addEventListener('change', doSearch);
 
-loadCities();
-loadSpas();
+(async function init() {
+  loadCities();
+  const perm = await locationPermission();
+  // If location is allowed, ALWAYS re-read where the customer is right now on every visit
+  // (show the last known position instantly, then update to the fresh one).
+  if (perm === 'granted') {
+    if (userLocation && userLocation.label === 'your current location') { renderLocBar('have'); loadSpas(); loadFeatured(); }
+    return useMyLocation();
+  }
+  if (userLocation) renderLocBar('have');           // an area the customer picked manually
+  else renderLocBar(perm === 'denied' ? 'denied' : 'ask');
+  loadSpas(); loadFeatured();
+})();
 </script>
 </body>
 </html>

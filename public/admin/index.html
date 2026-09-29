@@ -24,6 +24,8 @@
     <div class="tab" data-tab="transactions" onclick="switchTab('transactions')">💳 Transactions</div>
     <div class="tab" data-tab="users" onclick="switchTab('users')">👤 Customers &amp; owners</div>
     <div class="tab" data-tab="settlements" onclick="switchTab('settlements')">💸 Commission &amp; payouts</div>
+    <div class="tab" data-tab="featured" onclick="switchTab('featured')">⭐ Featured</div>
+    <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">📝 Reviews</div>
     <div class="tab" data-tab="messages" onclick="switchTab('messages')">✉️ Messages <span id="msgBadge"></span></div>
   </div>
 
@@ -32,6 +34,8 @@
   <div id="tab-transactions" style="display:none"><div id="transactionList"><p>Loading…</p></div></div>
   <div id="tab-users" style="display:none"><div id="userList"><p>Loading…</p></div></div>
   <div id="tab-settlements" style="display:none"><div id="settlementList"><p>Loading…</p></div></div>
+  <div id="tab-featured" style="display:none"><div id="featuredAdmin"><p>Loading…</p></div></div>
+  <div id="tab-reviews" style="display:none"><div id="reviewAdmin"><p>Loading…</p></div></div>
   <div id="tab-messages" style="display:none"><div id="messageList"><p>Loading…</p></div></div>
 </div>
 
@@ -48,12 +52,14 @@ const AUTH_OK = API.requireRole();
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['spas','bookings','transactions','users','settlements','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  ['spas','bookings','transactions','users','settlements','featured','reviews','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
   if (name === 'bookings') loadBookings();
   if (name === 'transactions') loadTransactions();
   if (name === 'users') loadUsers();
   if (name === 'messages') loadMessages();
   if (name === 'settlements') loadSettlements();
+  if (name === 'featured') loadFeaturedAdmin();
+  if (name === 'reviews') loadReviewAdmin();
 }
 
 function closeDetailModal() { document.getElementById('detailModal').classList.remove('open'); }
@@ -70,6 +76,7 @@ async function loadStats() {
       <div class="stat-card"><div class="num">✅ ${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
       <div class="stat-card"><div class="num">💰 ${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
       <div class="stat-card"><div class="num">🏦 ${money(s.commissionEarned)}</div><div class="label">Commission earned</div></div>
+      <div class="stat-card"><div class="num">⭐ ${money(s.featuredRevenue)}</div><div class="label">Featured revenue · ${s.activeFeatured} live</div></div>
       <div class="stat-card"><div class="num">✉️ ${s.newMessages}</div><div class="label">New messages</div></div>
     `;
     const badge = document.getElementById('msgBadge');
@@ -140,7 +147,7 @@ async function openSpaDetail(id) {
         <div><strong>City</strong><br>${s.city}</div>
         <div><strong>Address</strong><br>${s.address || '—'}</div>
         <div><strong>Hours</strong><br>${formatTime(s.opening_time)} – ${formatTime(s.closing_time)}</div>
-        <div><strong>Rating</strong><br>★ ${Math.round(s.rating*10)/10}</div>
+        <div><strong>Rating</strong><br>${s.rating_count ? '★ ' + Number(s.rating_avg).toFixed(1) + ' (' + s.rating_count + ' reviews)' : 'No reviews yet'}</div>
         <div><strong>Location</strong><br>${s.latitude ? `<a href="https://www.google.com/maps?q=${s.latitude},${s.longitude}" target="_blank" style="color:var(--moss);font-weight:600">View on map</a>` : 'Not set'}</div>
         <div><strong>Photos/videos</strong><br>${d.mediaCount} uploaded</div>
       </div>
@@ -383,6 +390,95 @@ async function recordSettlement(spaId, net) {
   const ref = prompt(what + '\n\nEnter the UTR / UPI / bank reference:', '');
   if (ref === null) return;
   try { const r = await API.post(`/admin/spas/${spaId}/settle`, { reference: ref }); toast(r.message); loadSettlements(); loadStats(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Featured placements ----------------
+function addDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return localISODate(d); }
+async function loadFeaturedAdmin() {
+  const el = document.getElementById('featuredAdmin');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { placements, spas, today } = await API.get('/admin/featured');
+    const stateBadge = { active: 'confirmed', upcoming: 'pending', expired: 'completed', cancelled: 'cancelled' };
+    const days = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000) + 1;
+    el.innerHTML = `
+      <div class="two-col">
+        <div class="panel">
+          <h3>Sell a featured placement</h3>
+          <p class="helper-text">Featured spas appear in the “Featured spas” strip at the top of the homepage and first in the Featured sort, marked as promoted. When several are live, higher-paying placements show first.</p>
+          <label for="fSpa">Spa</label>
+          <select id="fSpa">${spas.map(s => `<option value="${s.id}">${esc(s.name)} — ${esc(s.city)}</option>`).join('')}</select>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label for="fStart">Start date</label><input type="date" id="fStart" value="${today}"></div>
+            <div style="flex:1"><label for="fEnd">End date</label><input type="date" id="fEnd" value="${addDays(today, 29)}"></div>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            ${[7, 15, 30, 90].map(n => `<button type="button" class="btn small outline" onclick="document.getElementById('fEnd').value = addDays(document.getElementById('fStart').value, ${n - 1})">${n} days</button>`).join('')}
+          </div>
+          <label for="fAmount">Amount charged (₹)</label>
+          <input type="number" id="fAmount" min="0" placeholder="e.g. 2999">
+          <label for="fRef">Payment reference (UTR / UPI / invoice no.)</label>
+          <input id="fRef" placeholder="Optional">
+          <label for="fNote">Note</label>
+          <input id="fNote" placeholder="Optional">
+          <button class="btn gold block" style="margin-top:16px" onclick="addPlacement()">Add placement</button>
+        </div>
+        <div>
+          <div class="stat-grid" style="grid-template-columns:1fr 1fr">
+            <div class="stat-card"><div class="num">${placements.filter(p => p.state === 'active').length}</div><div class="label">Live now</div></div>
+            <div class="stat-card"><div class="num">${money(placements.filter(p => !p.cancelled).reduce((a, p) => a + p.amount, 0))}</div><div class="label">Total featured revenue</div></div>
+          </div>
+        </div>
+      </div>
+      <h3 style="margin:24px 0 10px">All placements</h3>
+      ${placements.length ? `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <thead><tr style="background:var(--stone-dark);text-align:left"><th style="padding:10px 12px">Spa</th><th style="padding:10px 12px">Period</th><th style="padding:10px 12px">Days</th><th style="padding:10px 12px">Amount</th><th style="padding:10px 12px">Status</th><th style="padding:10px 12px">Reference</th><th style="padding:10px 12px"></th></tr></thead>
+        <tbody>${placements.map(p => `<tr style="border-top:1px solid var(--line)">
+          <td style="padding:10px 12px"><strong>${esc(p.spa_name)}</strong><div class="helper-text">${esc(p.owner_name)}</div></td>
+          <td style="padding:10px 12px">${formatDate(p.starts_on)} → ${formatDate(p.ends_on)}</td><td style="padding:10px 12px">${days(p.starts_on, p.ends_on)}</td>
+          <td style="padding:10px 12px" class="mono">${money(p.amount)}</td>
+          <td style="padding:10px 12px"><span class="badge ${stateBadge[p.state]}">${p.state}</span></td>
+          <td style="padding:10px 12px" class="mono helper-text">${esc(p.reference || '—')}</td>
+          <td style="padding:10px 12px">${['active', 'upcoming'].includes(p.state) ? `<button class="btn small outline" onclick="cancelPlacement(${p.id})">Cancel</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="helper-text">No placements yet.</p>'}`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function addPlacement() {
+  const v = id => document.getElementById(id).value;
+  try {
+    const r = await API.post('/admin/featured', { spa_id: Number(v('fSpa')), starts_on: v('fStart'), ends_on: v('fEnd'), amount: Number(v('fAmount') || 0), reference: v('fRef'), note: v('fNote') });
+    toast(r.message); loadFeaturedAdmin(); loadStats();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function cancelPlacement(id) {
+  if (!confirm('Cancel this featured placement? The spa stops being featured immediately. (Refunds, if any, are handled outside the platform.)')) return;
+  try { const r = await API.put(`/admin/featured/${id}/cancel`); toast(r.message); loadFeaturedAdmin(); loadStats(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Review moderation ----------------
+async function loadReviewAdmin() {
+  const el = document.getElementById('reviewAdmin');
+  el.innerHTML = '<p>Loading…</p>';
+  try {
+    const { reviews } = await API.get('/admin/reviews');
+    el.innerHTML = `<div class="panel" style="margin-bottom:14px"><p class="helper-text" style="margin:0">Every review is tied to a real completed booking. Hide only reviews that break your content rules (abuse, personal data, spam) — hiding a review just because it’s negative misleads customers.</p></div>` +
+      (reviews.length ? reviews.map(r => `
+        <div class="panel" style="margin-bottom:12px;${r.hidden ? 'opacity:.6' : ''}">
+          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <strong>${esc(r.spa_name)} · <span style="color:var(--gold)">${starsHtml(r.rating)}</span></strong>
+            <span class="helper-text" style="margin:0">#${r.id} · ${esc(r.customer_name)} (${esc(r.customer_email)}) · booking #${r.booking_id} · ${formatDate(r.created_at)}</span>
+          </div>
+          ${r.comment ? `<p style="margin:8px 0 0">${esc(r.comment)}</p>` : ''}
+          ${r.owner_reply ? `<div class="owner-reply"><strong>Owner reply:</strong> ${esc(r.owner_reply)}</div>` : ''}
+          <button class="btn small outline" style="margin-top:10px" onclick="setReviewHidden(${r.id}, ${!r.hidden})">${r.hidden ? 'Show again' : 'Hide review'}</button>
+          ${r.hidden ? '<span class="badge cancelled" style="margin-left:8px">hidden</span>' : ''}
+        </div>`).join('') : '<p class="helper-text">No reviews yet.</p>');
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function setReviewHidden(id, hidden) {
+  try { const r = await API.put(`/admin/reviews/${id}`, { hidden }); toast(r.message); loadReviewAdmin(); }
   catch (e) { toast(e.message, 'error'); }
 }
 
