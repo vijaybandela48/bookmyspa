@@ -10,7 +10,7 @@
 //
 // ---- Email via Resend (https://resend.com) ----
 //   RESEND_API_KEY=re_xxx
-//   RESEND_FROM="SpaBook <bookings@yourdomain.com>"
+//   RESEND_FROM="BookMySpa <bookings@yourdomain.com>"
 //
 // ---- SMS / WhatsApp via Twilio (https://twilio.com) ----
 //   TWILIO_ACCOUNT_SID=ACxxx
@@ -30,7 +30,7 @@ function composeMessage({ customerName, spaName, serviceName, date, startTime, a
     `${date} at ${startTime}\n` +
     (payAtVenue ? `Amount due at the spa: Rs. ${amount}\n` : `Amount paid: Rs. ${amount}\n`) +
     (spaAddress ? `Location: ${spaAddress}\n` : '') +
-    `\nSee you there! — SpaBook`;
+    `\nSee you there! — BookMySpa`;
 }
 
 async function sendEmail(to, subject, body) {
@@ -42,7 +42,7 @@ async function sendEmail(to, subject, body) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: process.env.RESEND_FROM || 'SpaBook <onboarding@resend.dev>',
+        from: process.env.RESEND_FROM || 'BookMySpa <onboarding@resend.dev>',
         to: [to],
         subject,
         text: body,
@@ -136,7 +136,7 @@ const isSmsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_
 // also hand the code back in the response (only when not live, so testing
 // works without real SMS, and never in a way that could leak a real code).
 async function sendOtpSms(phone, code) {
-  const body = `${code} is your SpaBook verification code. It expires in 5 minutes. Don't share this code with anyone.`;
+  const body = `${code} is your BookMySpa verification code. It expires in 5 minutes. Don't share this code with anyone.`;
   const result = await sendTwilioMessage(phone, body, { from: process.env.TWILIO_SMS_FROM });
   if (result.status === 'mocked') {
     console.log(`[MOCK OTP] ${phone} -> ${code}`);

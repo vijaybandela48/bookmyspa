@@ -247,10 +247,10 @@ function seed() {
 function seedDemoData(mkUser) {
   console.log('Seeding database with demo data...');
 
-  const adminId = mkUser('Platform Admin', 'admin@spabook.demo', 'admin123', 'admin', '9990000000');
-  const owner1 = mkUser('Ravi Kumar', 'owner1@spabook.demo', 'owner123', 'owner', '9998887771');
-  const owner2 = mkUser('Anjali Rao', 'owner2@spabook.demo', 'owner123', 'owner', '9998887772');
-  const cust1 = mkUser('Priya Sharma', 'customer@spabook.demo', 'customer123', 'customer', '9998887773');
+  const adminId = mkUser('Platform Admin', 'admin@bookmyspa.demo', 'admin123', 'admin', '9990000000');
+  const owner1 = mkUser('Ravi Kumar', 'owner1@bookmyspa.demo', 'owner123', 'owner', '9998887771');
+  const owner2 = mkUser('Anjali Rao', 'owner2@bookmyspa.demo', 'owner123', 'owner', '9998887772');
+  const cust1 = mkUser('Priya Sharma', 'customer@bookmyspa.demo', 'customer123', 'customer', '9998887773');
 
   const mkSpa = (ownerId, name, desc, city, address, emoji, status = 'approved', lat = null, lng = null) => {
     const info = db.prepare(
@@ -311,10 +311,10 @@ function seedDemoData(mkUser) {
   mkService(spa4, 'Couples Massage', 'Side-by-side relaxation for two.', 60, 3999);
 
   console.log('Seed complete. Demo logins:');
-  console.log('  admin@spabook.demo / admin123 (admin)');
-  console.log('  owner1@spabook.demo / owner123 (spa owner - Hyderabad spas)');
-  console.log('  owner2@spabook.demo / owner123 (spa owner - Bangalore spas)');
-  console.log('  customer@spabook.demo / customer123 (customer)');
+  console.log('  admin@bookmyspa.demo / admin123 (admin)');
+  console.log('  owner1@bookmyspa.demo / owner123 (spa owner - Hyderabad spas)');
+  console.log('  owner2@bookmyspa.demo / owner123 (spa owner - Bangalore spas)');
+  console.log('  customer@bookmyspa.demo / customer123 (customer)');
 }
 
 seed();

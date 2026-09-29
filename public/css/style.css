@@ -275,3 +275,27 @@ label:first-child { margin-top: 0; }
   border-top: 1px solid rgba(255,255,255,0.1); padding: 18px 24px; color: rgba(255,255,255,0.45);
   font-size: 12.5px; text-align: center;
 }
+
+/* ---------- Portal tag, focus states, mobile polish ---------- */
+.portal-tag {
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; background: var(--gold); color: var(--moss-deep); padding: 3px 8px; border-radius: 999px;
+}
+.btn:focus-visible, a:focus-visible, .tab:focus-visible, .slot:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+.tabs { overflow-x: auto; }
+.tab { white-space: nowrap; cursor: pointer; }
+@media (max-width: 640px) {
+  .hero h1 { font-size: 30px; }
+  .nav-user { display: none; }
+  .nav-right { gap: 12px; }
+  .search-bar { flex-wrap: wrap; border-radius: var(--radius); }
+  .search-bar button { width: 100%; padding: 12px; }
+  .ticket .stub { width: 70px; }
+  .panel { padding: 18px; }
+  .modal { padding: 20px; }
+}
+.feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; }
+.feature-card { background: var(--white); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow); }
+.feature-card .ico { font-size: 28px; margin-bottom: 8px; }
+.feature-card h3 { font-size: 17px; }
+.feature-card p { font-size: 14px; color: var(--ink-soft); margin: 0; }

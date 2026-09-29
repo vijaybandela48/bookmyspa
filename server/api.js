@@ -10,14 +10,43 @@ const { checkRateLimit, checkRateLimitByKey } = require('./rateLimit');
 const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads', 'spas');
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB raw body cap (covers ~15MB file as base64)
 
+// Fields that must reach the server byte-for-byte (secrets, signatures, file data).
+const RAW_FIELDS = new Set(['password', 'dataUrl', 'signature', 'otpCode', 'code', 'orderId', 'paymentId']);
+
+// Neutralizes HTML-significant characters in every user-supplied string before
+// it's stored. The frontend renders stored text into HTML, so without this a
+// spa name or contact message containing <script>/<img onerror> would execute
+// in other users' browsers — including the admin panel (stored XSS).
+function sanitizeInput(value, key) {
+  if (typeof value === 'string') {
+    if (RAW_FIELDS.has(key)) return value;
+    return value.replace(/[<>`]/g, '').replace(/"/g, '\u201D').replace(/'/g, '\u2019').trim();
+  }
+  if (Array.isArray(value)) return value.map((v) => sanitizeInput(v, key));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = sanitizeInput(value[k], k);
+    return out;
+  }
+  return value;
+}
+
+const MAX_JSON_BYTES = 1024 * 1024; // 1MB — uploads use their own larger limit
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (chunk) => (data += chunk));
+    let tooBig = false;
+    req.on('data', (chunk) => {
+      if (tooBig) return;
+      data += chunk;
+      if (data.length > MAX_JSON_BYTES) { tooBig = true; reject(new Error('Request body too large.')); req.destroy(); }
+    });
     req.on('end', () => {
+      if (tooBig) return;
       if (!data) return resolve({});
       try {
-        resolve(JSON.parse(data));
+        resolve(sanitizeInput(JSON.parse(data)));
       } catch (e) {
         reject(new Error('Invalid JSON body'));
       }
@@ -143,6 +172,44 @@ function minutesToTime(m) {
   return `${h}:${mm}`;
 }
 
+// Spa hours and slots are in the business's local time (default IST, UTC+5:30),
+// NOT the server's clock — Railway servers run on UTC, which previously made
+// already-passed slots bookable for 5.5 hours every morning.
+const TZ_OFFSET_MINUTES = Number(process.env.TZ_OFFSET_MINUTES || 330);
+function localNow() {
+  const d = new Date(Date.now() + TZ_OFFSET_MINUTES * 60000);
+  return { date: d.toISOString().slice(0, 10), minutes: d.getUTCHours() * 60 + d.getUTCMinutes() };
+}
+const MAX_ADVANCE_DAYS = 60;
+function validateBookingDate(date) {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(Date.parse(date + 'T00:00:00Z'))) return 'Invalid date.';
+  const today = localNow().date;
+  if (date < today) return "You can't book a date in the past.";
+  const max = new Date(Date.parse(today + 'T00:00:00Z') + MAX_ADVANCE_DAYS * 86400000).toISOString().slice(0, 10);
+  if (date > max) return `Bookings can only be made up to ${MAX_ADVANCE_DAYS} days in advance.`;
+  return null;
+}
+
+const isProduction = process.env.NODE_ENV === 'production';
+// Mock payments are for development only. In production without real
+// Razorpay keys, online payment is switched off entirely (pay-at-spa still
+// works) — otherwise anyone could "pay" with the mock gateway for free.
+function onlinePaymentsAvailable() { return gateway.isLive || !isProduction; }
+// Same idea for OTP: without a real SMS provider in production, a "verification"
+// code shown on screen verifies nothing, so OTP is disabled rather than faked.
+function otpAvailable() { return notifier.isSmsConfigured || !isProduction; }
+
+// Each website only accepts its own kind of account: customers on the main
+// site, spa owners on the partner portal, admins on the admin console.
+const PORTAL_ROLE = { customer: 'customer', partner: 'owner', admin: 'admin' };
+function checkPortal(user, portal) {
+  const expected = PORTAL_ROLE[portal] || 'customer';
+  if (user.role === expected) return null;
+  if (user.role === 'owner') return 'This is a spa partner account. Please log in on the BookMySpa Partner portal.';
+  if (user.role === 'customer') return 'This is a customer account. Please log in on the main BookMySpa website.';
+  return 'Invalid email or password.'; // never reveal that an admin account exists
+}
+
 function getAvailableSlots(spa, service, date) {
   cleanupStaleBookings();
   const openMin = timeToMinutes(spa.opening_time);
@@ -170,9 +237,9 @@ function getAvailableSlots(spa, service, date) {
   }
 
   const slots = [];
-  const now = new Date();
-  const isToday = date === now.toISOString().slice(0, 10);
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const nowLocal = localNow();
+  const isToday = date === nowLocal.date;
+  const nowMinutes = nowLocal.minutes;
 
   for (let start = openMin; start + duration <= closeMin; start += duration) {
     const end = start + duration;
@@ -306,6 +373,10 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { received: true });
     }
 
+    if (parts[1] === 'config' && req.method === 'GET') {
+      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/' });
+    }
+
     // ---------------- AUTH ----------------
     // Sends a 6-digit code by SMS. Used before registration (to verify a new
     // phone) and before OTP login (to prove you own an existing account's phone).
@@ -315,6 +386,7 @@ async function handleApi(req, res, pathname, query) {
       const purpose = ['registration', 'login'].includes(body.purpose) ? body.purpose : null;
       if (!phone || phone.length < 10) return sendJSON(res, 400, { error: 'Enter a valid phone number.' });
       if (!purpose) return sendJSON(res, 400, { error: 'Invalid request.' });
+      if (!otpAvailable()) return sendJSON(res, 503, { error: 'Phone verification by SMS is not available right now.' });
 
       if (!checkRateLimitByKey('otp_send:' + phone, { maxRequests: 3, windowMs: 10 * 60 * 1000 })) {
         return sendJSON(res, 429, { error: 'Too many codes requested for this number. Please wait a few minutes.' });
@@ -335,7 +407,7 @@ async function handleApi(req, res, pathname, query) {
       const result = await notifier.sendOtpSms(phone, code);
 
       const response = { success: true, message: 'Verification code sent.' };
-      if (!notifier.isSmsConfigured) response.devCode = code; // mock mode only — never leaks a real SMS code
+      if (!notifier.isSmsConfigured && !isProduction) response.devCode = code; // local development only
       return sendJSON(res, 200, response);
     }
 
@@ -344,27 +416,33 @@ async function handleApi(req, res, pathname, query) {
         return sendJSON(res, 429, { error: 'Too many signup attempts. Please try again later.' });
       }
       const body = await parseBody(req);
-      const { name, email, password, role } = body;
+      const { name, password } = body;
+      const email = String(body.email || '').trim().toLowerCase();
+      const role = body.portal === 'partner' ? 'owner' : 'customer';
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJSON(res, 400, { error: 'Enter a valid email address.' });
       const phone = normalizePhone(body.phone);
       if (!name || !email || !password || !role || !phone) return sendJSON(res, 400, { error: 'name, email, phone, and password are required.' });
-      if (password.length < 6) return sendJSON(res, 400, { error: 'Password must be at least 6 characters.' });
+      if (typeof password !== 'string' || password.length < 8 || password.length > 200) return sendJSON(res, 400, { error: 'Password must be at least 8 characters.' });
       if (!['customer', 'owner'].includes(role)) return sendJSON(res, 400, { error: 'role must be customer or owner.' });
 
-      const otpResult = verifyOtp(phone, body.otpCode, 'registration');
-      if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
+      const otpRequired = otpAvailable();
+      if (otpRequired) {
+        const otpResult = verifyOtp(phone, body.otpCode, 'registration');
+        if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
+      }
 
-      const existingEmail = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+      const existingEmail = db.prepare('SELECT id FROM users WHERE lower(email) = ?').get(email);
       if (existingEmail) return sendJSON(res, 409, { error: 'An account with this email already exists.' });
       const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
       if (existingPhone) return sendJSON(res, 409, { error: 'An account with this phone number already exists.' });
 
       const { hash, salt } = hashPassword(password);
       const info = db.prepare(
-        'INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role) VALUES (?,?,?,1,?,?,?)'
-      ).run(name, email, phone, hash, salt, role);
+        'INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role) VALUES (?,?,?,?,?,?,?)'
+      ).run(name, email, phone, otpRequired ? 1 : 0, hash, salt, role);
       const user = { id: Number(info.lastInsertRowid), name, email, role };
       const token = sign({ id: user.id, role: user.role, name: user.name });
-      return sendJSON(res, 201, { token, user: publicUser({ ...user, phone, phone_verified: 1 }) });
+      return sendJSON(res, 201, { token, user: publicUser({ ...user, phone, phone_verified: otpRequired ? 1 : 0 }) });
     }
 
     if (parts[1] === 'auth' && parts[2] === 'login' && req.method === 'POST') {
@@ -372,11 +450,14 @@ async function handleApi(req, res, pathname, query) {
         return sendJSON(res, 429, { error: 'Too many login attempts. Please wait a few minutes and try again.' });
       }
       const body = await parseBody(req);
-      const { email, password } = body;
-      const u = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+      const email = String(body.email || '').trim().toLowerCase();
+      const { password } = body;
+      const u = db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email);
       if (!u || !verifyPassword(password, u.password_salt, u.password_hash)) {
         return sendJSON(res, 401, { error: 'Invalid email or password.' });
       }
+      const portalErr = checkPortal(u, body.portal);
+      if (portalErr) return sendJSON(res, 403, { error: portalErr });
       const token = sign({ id: u.id, role: u.role, name: u.name });
       return sendJSON(res, 200, { token, user: publicUser(u) });
     }
@@ -396,6 +477,9 @@ async function handleApi(req, res, pathname, query) {
 
       const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
       if (!u) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
+      if (u.role === 'admin') return sendJSON(res, 403, { error: 'Admins must log in with a password.' });
+      const otpPortalErr = checkPortal(u, body.portal);
+      if (otpPortalErr) return sendJSON(res, 403, { error: otpPortalErr });
 
       const token = sign({ id: u.id, role: u.role, name: u.name });
       return sendJSON(res, 200, { token, user: publicUser(u) });
@@ -453,7 +537,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'spas' && parts.length === 3 && req.method === 'GET') {
-      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const services = db.prepare(
         `SELECT sv.*, rt.name as room_type_name, rt.capacity as room_type_capacity
@@ -465,25 +549,27 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'spas' && parts[3] === 'slots' && req.method === 'GET') {
-      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const serviceId = query.get('serviceId');
       const date = query.get('date');
       if (!serviceId || !date) return sendJSON(res, 400, { error: 'serviceId and date query params are required.' });
-      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ?').get(serviceId, spa.id);
+      const dateErr = validateBookingDate(date);
+      if (dateErr) return sendJSON(res, 400, { error: dateErr });
+      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spa.id);
       if (!service) return sendJSON(res, 404, { error: 'Service not found for this spa.' });
       const slots = getAvailableSlots(spa, service, date);
       return sendJSON(res, 200, { slots });
     }
 
     if (parts[1] === 'spas' && parts[3] === 'coupons' && parts[4] === 'validate' && req.method === 'GET') {
-      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const code = query.get('code');
       const serviceId = query.get('serviceId');
       const date = query.get('date');
       const startTime = query.get('startTime');
-      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ?').get(serviceId, spa.id);
+      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spa.id);
       if (!service) return sendJSON(res, 404, { error: 'Service not found.' });
 
       const result = findCoupon(spa.id, code, serviceId, date, startTime);
@@ -524,8 +610,13 @@ async function handleApi(req, res, pathname, query) {
       const paymentMode = body.paymentMode === 'pay_at_venue' ? 'pay_at_venue' : 'online';
       const notifyChannel = ['email', 'sms', 'whatsapp'].includes(body.notifyChannel) ? body.notifyChannel : 'email';
 
-      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(spaId);
-      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ?').get(serviceId, spaId);
+      const dateErr = validateBookingDate(date);
+      if (dateErr) return sendJSON(res, 400, { error: dateErr });
+      if (paymentMode === 'online' && !onlinePaymentsAvailable()) {
+        return sendJSON(res, 400, { error: "Online payment isn't available yet — please choose Pay at the spa." });
+      }
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(spaId);
+      const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spaId);
       if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
 
       const slots = getAvailableSlots(spa, service, date);
@@ -601,6 +692,7 @@ async function handleApi(req, res, pathname, query) {
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
       if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (booking.status !== 'pending_payment') return sendJSON(res, 409, { error: `This booking is already ${booking.status}.` });
+      if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: "Online payment isn't available yet." });
 
       try {
         const order = await gateway.createOrder({ amount: booking.amount, bookingId: booking.id });
@@ -706,6 +798,7 @@ async function handleApi(req, res, pathname, query) {
       const body = await parseBody(req);
       const { name, description, city, address, phone, opening_time, closing_time, cover_emoji } = body;
       if (!name || !city) return sendJSON(res, 400, { error: 'name and city are required.' });
+      if ((opening_time || '10:00') >= (closing_time || '20:00')) return sendJSON(res, 400, { error: 'Closing time must be after opening time.' });
       const latitude = body.latitude !== undefined && body.latitude !== '' ? Number(body.latitude) : null;
       const longitude = body.longitude !== undefined && body.longitude !== '' ? Number(body.longitude) : null;
       if ((latitude !== null && (isNaN(latitude) || latitude < -90 || latitude > 90)) ||
@@ -773,6 +866,8 @@ async function handleApi(req, res, pathname, query) {
       let discount_percent = Number(body.discount_percent) || 0;
       if (discount_percent < 0 || discount_percent > 90) return sendJSON(res, 400, { error: 'Discount must be between 0 and 90%.' });
       if (!name || !duration_minutes || !price) return sendJSON(res, 400, { error: 'name, duration_minutes and price are required.' });
+      if (!(Number(price) > 0 && Number(price) <= 1000000)) return sendJSON(res, 400, { error: 'Price must be a positive amount.' });
+      if (!(Number.isInteger(Number(duration_minutes)) && duration_minutes >= 15 && duration_minutes <= 480)) return sendJSON(res, 400, { error: 'Duration must be between 15 and 480 minutes.' });
       let room_type_id = body.room_type_id ? Number(body.room_type_id) : null;
       if (room_type_id) {
         const rt = db.prepare('SELECT id FROM room_types WHERE id = ? AND spa_id = ?').get(room_type_id, spa.id);

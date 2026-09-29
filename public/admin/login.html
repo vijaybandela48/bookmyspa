@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — BookMySpa</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap auth-wrap">
+  <div class="panel">
+    <h2>Admin console</h2>
+    <p class="helper-text" style="margin-bottom:14px">Authorized personnel only.</p>
+    <form id="pwForm" style="margin-top:16px" novalidate>
+      <label for="email">Email</label>
+      <input type="email" id="email" autocomplete="email" placeholder="you@example.com">
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
+      <button class="btn gold block" style="margin-top:20px" type="submit" id="pwBtn">Log in</button>
+    </form>
+    
+  </div>
+</div>
+
+<div id="sb-footer"></div>
+<script src="/js/api.js"></script>
+<script>
+renderNav();
+renderFooter();
+function safeNext(fallback) {
+  const n = new URLSearchParams(location.search).get('next');
+  return n && n.startsWith('/') && !n.startsWith('//') ? n : fallback;
+}
+function startCooldown(btn, label) {
+  let s = 30; btn.disabled = true;
+  const t = setInterval(() => { s--; if (s <= 0) { clearInterval(t); btn.disabled = false; btn.textContent = label; } else btn.textContent = `Resend in ${s}s`; }, 1000);
+}
+function showOtpStatus(el, result) {
+  el.textContent = result.devCode ? `Code sent. (Development mode — your code is ${result.devCode})` : 'Code sent by SMS. It expires in 5 minutes.';
+  el.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
+}
+
+if (API.isLoggedIn() && API.user().role === PORTAL_ROLE[PORTAL]) location.href = safeNext('/admin/');
+document.getElementById('pwForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  if (!email || !password) { toast('Enter your email and password.', 'error'); return; }
+  const btn = document.getElementById('pwBtn'); btn.disabled = true; btn.textContent = 'Logging in…';
+  try {
+    const { token, user } = await API.post('/auth/login', { email, password, portal: PORTAL });
+    API.saveSession(token, user); toast('Welcome back, ' + user.name.split(' ')[0] + '!');
+    setTimeout(() => location.href = safeNext('/admin/'), 400);
+  } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Log in'; }
+});
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign up — BookMySpa</title>
+<title>List your spa — BookMySpa Partners</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -15,8 +15,8 @@
 
 <div class="wrap auth-wrap">
   <div class="panel">
-    <h2>Create your account</h2>
-    <p class="helper-text" style="margin-bottom:6px">Book massages and spa treatments in seconds.</p>
+    <h2>List your spa on BookMySpa</h2>
+    <p class="helper-text" style="margin-bottom:6px">Create your partner account. You can add your spa, services, and photos right after — listings go live once our team reviews them.</p>
     <form id="regForm" novalidate>
       <label for="name">Full name</label>
       <input id="name" autocomplete="name" maxlength="80" placeholder="Your name">
@@ -42,7 +42,7 @@
       </label>
       <button class="btn gold block" style="margin-top:20px" type="submit" id="regBtn">Create account</button>
     </form>
-    <hr class="divider-line"><p style="font-size:13.5px;color:var(--ink-soft)">Already have an account? <a href="/login.html" style="color:var(--moss);font-weight:700">Log in</a></p>
+    <hr class="divider-line"><p style="font-size:13.5px;color:var(--ink-soft)">Already a partner? <a href="/partner/login.html" style="color:var(--moss);font-weight:700">Log in</a></p>
   </div>
 </div>
 
@@ -106,7 +106,7 @@ document.getElementById('regForm').addEventListener('submit', async (e) => {
     const { token, user } = await API.post('/auth/register', { name, email, phone, password, otpCode, portal: PORTAL });
     API.saveSession(token, user);
     toast('Welcome to BookMySpa, ' + user.name.split(' ')[0] + '!');
-    setTimeout(() => location.href = safeNext('/'), 500);
+    setTimeout(() => location.href = safeNext('/partner/dashboard.html'), 500);
   } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Create account'; }
 });
 </script>

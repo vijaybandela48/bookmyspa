@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Owner dashboard — SpaBook</title>
+<title>Owner dashboard — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -165,8 +165,8 @@
 
 <script src="/js/api.js"></script>
 <script>
-renderNav('owner');
-if (!API.isLoggedIn() || API.user().role !== 'owner') window.location.href = '/login.html';
+renderNav('dashboard');
+const AUTH_OK = API.requireRole();
 
 let mySpas = [];
 let activeSpaId = null;
@@ -763,7 +763,7 @@ async function markAsPaid(id) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-loadSpas();
+if (AUTH_OK) loadSpas();
 </script>
 </body>
 </html>

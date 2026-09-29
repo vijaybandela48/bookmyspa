@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin panel — SpaBook</title>
+<title>Admin panel — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -42,7 +42,7 @@
 <script src="/js/api.js"></script>
 <script>
 renderNav('admin');
-if (!API.isLoggedIn() || API.user().role !== 'admin') window.location.href = '/login.html';
+const AUTH_OK = API.requireRole();
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
@@ -355,8 +355,7 @@ async function setMessageStatus(id, status) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-loadStats();
-loadSpas();
+if (AUTH_OK) { loadStats(); loadSpas(); }
 </script>
 </body>
 </html>

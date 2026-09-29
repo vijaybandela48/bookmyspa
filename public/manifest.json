@@ -1,6 +1,6 @@
 {
-  "name": "SpaBook — Massage & Spa Booking",
-  "short_name": "SpaBook",
+  "name": "BookMySpa — Massage & Spa Booking",
+  "short_name": "BookMySpa",
   "description": "Book massage and spa appointments online. Browse nearby spas, compare prices, and pay securely.",
   "start_url": "/",
   "scope": "/",

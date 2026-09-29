@@ -65,6 +65,9 @@ async function createOrder({ amount, bookingId }) {
 
 function verifyPayment({ mode, orderId, paymentId, signature }) {
   if (mode !== 'razorpay') {
+    if (process.env.NODE_ENV === 'production') {
+      return { success: false, transactionRef: '', message: 'Payment could not be verified.' };
+    }
     const success = Math.random() > 0.03;
     return {
       success,

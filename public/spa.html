@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Spa details — SpaBook</title>
+<title>Spa details — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -63,13 +63,13 @@ function setPaymentMode(mode) {
   document.getElementById('confirmPayBtn').textContent = mode === 'online' ? 'Pay & confirm' : 'Confirm booking';
 }
 
-function todayISO() { return new Date().toISOString().slice(0,10); }
+function todayISO() { return localISODate(); }
 function dateOptions() {
   const opts = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    opts.push(d.toISOString().slice(0,10));
+    opts.push(localISODate(d));
   }
   return opts;
 }
@@ -206,10 +206,10 @@ function pickSlot(start) {
   btn.textContent = 'Book ' + formatTime(start);
 }
 
-function openPayModal() {
+async function openPayModal() {
   if (!API.isLoggedIn()) {
     toast('Please log in as a customer to book.', 'error');
-    setTimeout(() => window.location.href = '/login.html', 700);
+    setTimeout(() => window.location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search), 700);
     return;
   }
   const user = API.user();
@@ -219,6 +219,7 @@ function openPayModal() {
   }
   appliedCoupon = null;
   paymentMode = 'online';
+  const onlineOk = (await getConfig()).onlinePayments;
   const service = servicesData.find(s => s.id === selectedServiceId);
   const modal = document.getElementById('payModal');
   document.getElementById('payModalBody').innerHTML = `
@@ -258,6 +259,11 @@ function openPayModal() {
     <p class="helper-text" style="margin-top:12px">This is a simulated payment gateway for demo purposes. No real money is charged. Confirmation delivery is also simulated in this demo — the message content is real, but nothing is actually sent.</p>
   `;
   renderPriceDisplay(service);
+  if (!onlineOk) {
+    document.getElementById('modeOnlineBtn').style.display = 'none';
+    setPaymentMode('pay_at_venue');
+    document.getElementById('venueHint').textContent = 'Online payment is coming soon — reserve your slot now and pay by cash, card or UPI at the spa.';
+  }
   modal.classList.add('open');
 }
 
@@ -335,7 +341,7 @@ async function confirmBooking() {
         order_id: order.orderId,
         amount: order.amountPaise,
         currency: order.currency,
-        name: 'SpaBook',
+        name: 'BookMySpa',
         description: spaData.name,
         prefill: order.prefill,
         theme: { color: '#23392C' },

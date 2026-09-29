@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Log in — BookMySpa</title>
+<title>Partner login — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -15,8 +15,8 @@
 
 <div class="wrap auth-wrap">
   <div class="panel">
-    <h2>Welcome back</h2>
-    <p class="helper-text" style="margin-bottom:14px">Log in to book and manage your spa appointments.</p>
+    <h2>Partner login</h2>
+    <p class="helper-text" style="margin-bottom:14px">Manage your spa, bookings, and payments.</p>
     <div class="role-toggle" id="modeToggle" style="display:none">
       <button type="button" class="active" data-mode="password" onclick="setMode('password')">🔑 Password</button>
       <button type="button" data-mode="otp" onclick="setMode('otp')">💬 OTP</button>
@@ -41,7 +41,7 @@
       </div>
       <button class="btn gold block" style="margin-top:20px" type="submit" id="otpLoginBtn" disabled>Log in with OTP</button>
     </form>
-    <hr class="divider-line"><p style="font-size:13.5px;color:var(--ink-soft)">New to BookMySpa? <a href="/register.html" style="color:var(--moss);font-weight:700">Create an account</a></p>
+    <hr class="divider-line"><p style="font-size:13.5px;color:var(--ink-soft)">Not a partner yet? <a href="/partner/register.html" style="color:var(--moss);font-weight:700">List your spa</a></p>
   </div>
 </div>
 
@@ -63,7 +63,7 @@ function showOtpStatus(el, result) {
   el.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
 }
 
-if (API.isLoggedIn() && API.user().role === PORTAL_ROLE[PORTAL]) location.href = safeNext('/');
+if (API.isLoggedIn() && API.user().role === PORTAL_ROLE[PORTAL]) location.href = safeNext('/partner/dashboard.html');
 document.getElementById('pwForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email').value.trim();
@@ -73,7 +73,7 @@ document.getElementById('pwForm').addEventListener('submit', async (e) => {
   try {
     const { token, user } = await API.post('/auth/login', { email, password, portal: PORTAL });
     API.saveSession(token, user); toast('Welcome back, ' + user.name.split(' ')[0] + '!');
-    setTimeout(() => location.href = safeNext('/'), 400);
+    setTimeout(() => location.href = safeNext('/partner/dashboard.html'), 400);
   } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Log in'; }
 });
 getConfig().then(cfg => { if (cfg.otp) document.getElementById('modeToggle').style.display = 'flex'; });
@@ -105,7 +105,7 @@ document.getElementById('otpForm').addEventListener('submit', async (e) => {
   try {
     const { token, user } = await API.post('/auth/otp/login', { phone: document.getElementById('otpPhone').value.trim(), code, portal: PORTAL });
     API.saveSession(token, user); toast('Welcome back, ' + user.name.split(' ')[0] + '!');
-    setTimeout(() => location.href = safeNext('/'), 400);
+    setTimeout(() => location.href = safeNext('/partner/dashboard.html'), 400);
   } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Log in with OTP'; }
 });
 </script>

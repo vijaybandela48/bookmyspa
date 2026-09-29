@@ -31,7 +31,9 @@ function serveStatic(req, res, pathname) {
   // AND all uploaded media on any host that only supports a single volume.
   const isUpload = pathname.startsWith('/uploads/');
   const rootDir = isUpload ? DATA_DIR : PUBLIC_DIR;
-  let filePath = path.join(rootDir, decodeURIComponent(pathname));
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); } catch { res.writeHead(400); return res.end('Bad request'); } // malformed URLs used to crash the server
+  let filePath = path.join(rootDir, decoded);
 
   // Directory traversal guard
   if (!filePath.startsWith(rootDir)) {
@@ -72,7 +74,7 @@ function streamFile(res, filePath) {
 
 const server = http.createServer((req, res) => {
   const parsed = url.parse(req.url, true);
-  const pathname = parsed.pathname;
+  let pathname = parsed.pathname;
   const query = new URLSearchParams(parsed.query);
 
   // CORS (useful if you later split frontend/backend across origins)
@@ -97,13 +99,33 @@ const server = http.createServer((req, res) => {
     return handleApi(req, res, pathname, query);
   }
 
+  // Old owner-dashboard links from before the partner portal existed.
+  if (pathname === '/owner' || pathname.startsWith('/owner/')) {
+    res.writeHead(301, { Location: '/partner/dashboard.html' });
+    return res.end();
+  }
+
+  // Separate websites on separate subdomains: partner.yourdomain.com serves
+  // the partner portal and admin.yourdomain.com the admin console at their
+  // root. Shared assets (css, js, icons, uploads, legal pages) are served as-is.
+  const host = String(req.headers.host || '').toLowerCase();
+  const SHARED = /^\/(css|js|icons|uploads)\/|^\/(manifest\.json|sw\.js|about\.html|contact\.html|privacy\.html|terms\.html)$/;
+  for (const [sub, dir] of [['partner.', '/partner'], ['admin.', '/admin']]) {
+    if (host.startsWith(sub) && !pathname.startsWith(dir) && !SHARED.test(pathname)) {
+      pathname = dir + (pathname === '/' ? '/' : pathname);
+    }
+  }
+
   return serveStatic(req, res, pathname);
 });
 
+process.on('uncaughtException', (err) => console.error('Uncaught exception (server kept running):', err));
+process.on('unhandledRejection', (err) => console.error('Unhandled rejection (server kept running):', err));
+
 server.listen(PORT, () => {
-  console.log(`\n  SpaBook platform running at http://localhost:${PORT}\n`);
+  console.log(`\n  BookMySpa platform running at http://localhost:${PORT}\n`);
   console.log('  Demo logins:');
-  console.log('   Admin:   admin@spabook.demo / admin123');
-  console.log('   Owner:   owner1@spabook.demo / owner123');
-  console.log('   Customer: customer@spabook.demo / customer123\n');
+  console.log('   Admin:   admin@bookmyspa.demo / admin123');
+  console.log('   Owner:   owner1@bookmyspa.demo / owner123');
+  console.log('   Customer: customer@bookmyspa.demo / customer123\n');
 });

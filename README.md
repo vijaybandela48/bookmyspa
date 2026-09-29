@@ -1,4 +1,4 @@
-# SpaBook — Spa & Massage Booking Platform
+# BookMySpa — Spa & Massage Booking Platform
 
 A working full-stack marketplace for spa/massage bookings — customers browse spas,
 book a time slot, and pay online; spa owners manage their listing, services and
@@ -30,13 +30,48 @@ these logins:
 
 | Role     | Email                     | Password    |
 |----------|---------------------------|-------------|
-| Customer | customer@spabook.demo     | customer123 |
-| Owner    | owner1@spabook.demo       | owner123    |
-| Owner    | owner2@spabook.demo       | owner123    |
-| Admin    | admin@spabook.demo        | admin123    |
+| Customer | customer@bookmyspa.demo     | customer123 |
+| Owner    | owner1@bookmyspa.demo       | owner123    |
+| Owner    | owner2@bookmyspa.demo       | owner123    |
+| Admin    | admin@bookmyspa.demo        | admin123    |
 
 To start over with a clean database, delete `data/spa_platform.db` and restart
 the server — it will reseed automatically.
+
+## Three separate websites
+
+BookMySpa is three websites served by one server, each with its own login
+and its own session (a customer and a spa owner can be signed in on the same
+browser without interfering):
+
+| Website | Path (single domain) | Own subdomain (recommended) | Who |
+|---|---|---|---|
+| Customer site | `/` | `bookmyspa.in` | Customers browse and book |
+| Partner portal | `/partner/` | `partner.bookmyspa.in` | Spa owners sign up & manage their spa |
+| Admin console | `/admin/login.html` | `admin.bookmyspa.in` | You |
+
+The customer site has **no business signup** — customers can only ever create
+customer accounts (the server decides the role from which website you signed
+up on; it can't be chosen or faked by the browser). Owners sign up only on the
+partner portal. Each login page only accepts its own kind of account.
+
+**To use real subdomains:** point `partner.yourdomain` and `admin.yourdomain`
+at the same Railway service (Settings → Networking → Custom Domain), then set
+`PARTNER_URL=https://partner.yourdomain` so the customer site's "Partner with
+us" footer link points there. No code changes needed — the server routes by
+hostname automatically. Until then, `/partner/` and `/admin/login.html` on your
+main domain work exactly the same.
+
+**Local demo logins** (development only — never created in production):
+customer `customer@bookmyspa.demo` / `customer123` at `/login.html`,
+owner `owner1@bookmyspa.demo` / `owner123` at `/partner/login.html`,
+admin `admin@bookmyspa.demo` / `admin123` at `/admin/login.html`.
+
+**Safety defaults in production:** without Razorpay keys, online payment is
+switched off and customers can only reserve-and-pay-at-the-spa (nobody can get
+a "paid" booking for free). Without Twilio, SMS/OTP is switched off and phones
+are marked unverified (rather than faking verification). Adding the keys turns
+each feature on automatically.
 
 ## What's included (working, end-to-end)
 
@@ -248,7 +283,7 @@ uploads on the next push.
    the easiest way, or your distro's Node 22 package).
 2. Copy this folder to the server (`git clone` or `scp`).
 3. Run it persistently with a process manager, e.g.
-   `npm install -g pm2 && pm2 start server/server.js --name spabook && pm2 save`.
+   `npm install -g pm2 && pm2 start server/server.js --name bookmyspa && pm2 save`.
 4. Put [Nginx](https://nginx.org) in front as a reverse proxy to port 3000,
    then run `certbot --nginx` for a free HTTPS certificate on your domain.
 5. Since everything lives on local disk already, there's no separate volume

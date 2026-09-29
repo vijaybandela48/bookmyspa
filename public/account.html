@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My bookings — SpaBook</title>
+<title>My bookings — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#23392C">
@@ -25,9 +25,7 @@
 renderNav('account');
 renderFooter();
 
-if (!API.isLoggedIn() || API.user().role !== 'customer') {
-  window.location.href = '/login.html';
-}
+const AUTH_OK = API.requireRole();
 
 const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
 
@@ -85,7 +83,7 @@ async function cancelBooking(id) {
   }
 }
 
-load();
+if (AUTH_OK) load();
 </script>
 </body>
 </html>
