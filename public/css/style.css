@@ -315,3 +315,10 @@ label:first-child { margin-top: 0; }
 .bar { height:8px; background:var(--stone-dark); border-radius:99px; overflow:hidden; flex:1; }
 .bar > span { display:block; height:100%; background:var(--gold); }
 .star-input button { background:none; border:none; font-size:34px; padding:0 3px; cursor:pointer; }
+
+/* Compact location card on spa page */
+.loc-card { display:flex; gap:18px; align-items:center; padding:14px; }
+.loc-card iframe { width:260px; height:150px; border:0; border-radius:var(--radius-sm); flex-shrink:0; }
+.loc-card .loc-info { flex:1; min-width:0; }
+@media (max-width: 640px) { .loc-card { flex-direction:column; align-items:stretch; } .loc-card iframe { width:100%; height:160px; } }
+.loc-card iframe { background: var(--stone-dark) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ctext x='8' y='30' font-size='26'%3E%F0%9F%93%8D%3C/text%3E%3C/svg%3E") center no-repeat; border: 1px solid var(--line) !important; }

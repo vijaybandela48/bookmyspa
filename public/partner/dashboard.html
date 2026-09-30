@@ -162,6 +162,7 @@
   </div>
 
   <div id="tab-bookings" style="display:none">
+    <input id="ownerBookingSearch" placeholder="🔎 Search by booking ID, customer name or phone" oninput="clearTimeout(window._obs); window._obs = setTimeout(loadOwnerBookings, 250)" style="margin-bottom:16px">
     <div id="ownerBookings"><p>Loading…</p></div>
   </div>
 
@@ -253,8 +254,8 @@ async function loadSpas() {
             : `⚠️ No location set — this spa won't show up under "Nearby"`}
         </p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn small outline" onclick="openServiceManager(${s.id})">Manage services</button>
-          <button class="btn small outline" onclick="openRoomManager(${s.id})">🛏️ Rooms &amp; capacity</button>
+          <button class="btn small outline" onclick="openRoomManager(${s.id})">① 🛏️ Rooms &amp; capacity</button>
+          <button class="btn small outline" onclick="openServiceManager(${s.id})">② 💆 Manage services</button>
           <button class="btn small outline" onclick="openCouponManager(${s.id})">🏷️ Coupons</button>
           <button class="btn small outline" onclick="openMediaManager(${s.id})">📷 Photos &amp; videos</button>
           <button class="btn small outline" onclick="editSpaLocation(${s.id}, ${s.latitude || 'null'}, ${s.longitude || 'null'})">📍 ${s.latitude ? 'Update' : 'Set'} location</button>
@@ -700,7 +701,10 @@ async function loadOwnerBookings() {
   const el = document.getElementById('ownerBookings');
   el.innerHTML = '<p>Loading…</p>';
   try {
-    const { bookings } = await API.get('/owner/bookings');
+    let { bookings } = await API.get('/owner/bookings');
+    const q = (document.getElementById('ownerBookingSearch').value || '').trim().toLowerCase();
+    if (q) bookings = bookings.filter(b => [b.booking_ref, b.customer_name, b.customer_phone].some(v => String(v || '').toLowerCase().includes(q)));
+    if (q && !bookings.length) { el.innerHTML = '<p class="helper-text">No bookings match your search.</p>'; return; }
     if (!bookings.length) {
       el.innerHTML = `<div class="empty-state"><div class="big">📭</div><p>No bookings yet.</p></div>`;
       return;
@@ -731,6 +735,7 @@ async function loadOwnerBookings() {
             <div>
               <h4>${b.service_name}</h4>
               <div class="sub">${b.customer_name} · ${b.customer_phone || 'no phone'} · ${b.spa_name}</div>
+              ${b.booking_ref ? `<div class="mono" style="font-size:12.5px;color:var(--plum);margin-top:3px">Booking ID: ${esc(b.booking_ref)}</div>` : ''}
             </div>
             <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} (-${money(b.coupon_discount)})</div>` : ''}</div>
           </div>

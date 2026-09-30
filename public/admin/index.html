@@ -14,7 +14,10 @@
 <div id="sb-nav"></div>
 <div class="wrap page-body">
   <div class="eyebrow">Platform admin</div>
-  <h1 style="margin-top:4px">Admin panel</h1>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+    <h1 style="margin-top:4px">Admin panel</h1>
+    <button class="btn small outline" onclick="downloadBackup()" id="backupBtn" title="Download a full copy of the database">⬇ Download backup</button>
+  </div>
 
   <div class="stat-grid" id="stats" style="margin-top:24px"></div>
 
@@ -22,7 +25,8 @@
     <div class="tab active" data-tab="spas" onclick="switchTab('spas')">🏢 Spas</div>
     <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">📅 Bookings</div>
     <div class="tab" data-tab="transactions" onclick="switchTab('transactions')">💳 Transactions</div>
-    <div class="tab" data-tab="users" onclick="switchTab('users')">👤 Customers &amp; owners</div>
+    <div class="tab" data-tab="customers" onclick="switchTab('customers')">🙋 Customers</div>
+    <div class="tab" data-tab="owners" onclick="switchTab('owners')">🧑‍💼 Spa owners</div>
     <div class="tab" data-tab="settlements" onclick="switchTab('settlements')">💸 Commission &amp; payouts</div>
     <div class="tab" data-tab="featured" onclick="switchTab('featured')">⭐ Featured</div>
     <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">📝 Reviews</div>
@@ -30,9 +34,10 @@
   </div>
 
   <div id="tab-spas"><div id="spaList"><p>Loading…</p></div></div>
-  <div id="tab-bookings" style="display:none"><div id="bookingList"><p>Loading…</p></div></div>
+  <div id="tab-bookings" style="display:none"><input id="bookingSearch" placeholder="🔎 Track a booking — search by booking ID (BMS-…), customer name, phone or spa" oninput="clearTimeout(window._bs); window._bs = setTimeout(loadBookings, 300)" style="margin-bottom:14px"><div id="bookingList"><p>Loading…</p></div></div>
   <div id="tab-transactions" style="display:none"><div id="transactionList"><p>Loading…</p></div></div>
-  <div id="tab-users" style="display:none"><div id="userList"><p>Loading…</p></div></div>
+  <div id="tab-customers" style="display:none"><input id="custSearch" placeholder="🔎 Search customers by name, email or phone" oninput="loadCustomers()" style="margin-bottom:14px"><div id="customerList"><p>Loading…</p></div></div>
+  <div id="tab-owners" style="display:none"><input id="ownerSearch" placeholder="🔎 Search owners by name, email, phone or spa" oninput="loadOwners()" style="margin-bottom:14px"><div id="ownerList"><p>Loading…</p></div></div>
   <div id="tab-settlements" style="display:none"><div id="settlementList"><p>Loading…</p></div></div>
   <div id="tab-featured" style="display:none"><div id="featuredAdmin"><p>Loading…</p></div></div>
   <div id="tab-reviews" style="display:none"><div id="reviewAdmin"><p>Loading…</p></div></div>
@@ -52,10 +57,11 @@ const AUTH_OK = API.requireRole();
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['spas','bookings','transactions','users','settlements','featured','reviews','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  ['spas','bookings','transactions','customers','owners','settlements','featured','reviews','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
   if (name === 'bookings') loadBookings();
   if (name === 'transactions') loadTransactions();
-  if (name === 'users') loadUsers();
+  if (name === 'customers') loadCustomers();
+  if (name === 'owners') loadOwners();
   if (name === 'messages') loadMessages();
   if (name === 'settlements') loadSettlements();
   if (name === 'featured') loadFeaturedAdmin();
@@ -180,33 +186,33 @@ async function loadBookings() {
   const el = document.getElementById('bookingList');
   el.innerHTML = '<p>Loading…</p>';
   try {
-    const { bookings } = await API.get('/admin/bookings');
-    if (!bookings.length) { el.innerHTML = `<p class="helper-text">No bookings yet.</p>`; return; }
+    const q = (document.getElementById('bookingSearch').value || '').trim();
+    const { bookings } = await API.get('/admin/bookings' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    if (!bookings.length) { el.innerHTML = `<p class="helper-text">${q ? 'No bookings match your search.' : 'No bookings yet.'}</p>`; return; }
+    const th = 'style="padding:10px 14px;white-space:nowrap"', td = 'style="padding:10px 14px"';
     el.innerHTML = `
       <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th style="padding:10px 14px">ID</th><th style="padding:10px 14px">Customer</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Service</th>
-            <th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Payment</th><th style="padding:10px 14px">Status</th>
+            <th ${th}>Booking ID</th><th ${th}>Customer</th><th ${th}>Spa</th><th ${th}>Service</th>
+            <th ${th}>Appointment</th><th ${th}>Amount</th><th ${th}>Payment</th><th ${th}>Status</th>
           </tr></thead>
           <tbody>
             ${bookings.map(b => `
               <tr style="border-top:1px solid var(--line)">
-                <td style="padding:10px 14px" class="mono helper-text">#${b.id}</td>
-                <td style="padding:10px 14px">${b.customer_name}</td>
-                <td style="padding:10px 14px">${b.spa_name}</td>
-                <td style="padding:10px 14px">${b.service_name}</td>
-                <td style="padding:10px 14px">${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
-                <td style="padding:10px 14px" class="mono">${money(b.amount)}</td>
-                <td style="padding:10px 14px">${b.payment_mode === 'pay_at_venue' ? '🏢 At spa' : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}</td>
-                <td style="padding:10px 14px"><span class="badge ${b.status}">${statusLabel[b.status]}</span></td>
-              </tr>
-            `).join('')}
+                <td ${td} class="mono"><strong>${esc(b.booking_ref || '#' + b.id)}</strong><div class="helper-text" style="margin:0">booked ${formatDate(b.created_at)}</div></td>
+                <td ${td}>${esc(b.customer_name)}<div class="helper-text" style="margin:0">${esc(b.customer_phone || '')}</div></td>
+                <td ${td}>${esc(b.spa_name)}</td>
+                <td ${td}>${esc(b.service_name)}</td>
+                <td ${td}>${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
+                <td ${td} class="mono">${money(b.amount)}</td>
+                <td ${td}>${b.payment_mode === 'pay_at_venue' ? '🏢 At spa' : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}</td>
+                <td ${td}><span class="badge ${b.status}">${b.cancel_reason === 'no_show' ? 'No-show' : statusLabel[b.status]}</span></td>
+              </tr>`).join('')}
           </tbody>
         </table>
-      </div>
-    `;
-  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+      </div>`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
 }
 
 async function loadTransactions() {
@@ -220,7 +226,7 @@ async function loadTransactions() {
       <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th style="padding:10px 14px">Txn ID</th><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Customer</th>
+            <th style="padding:10px 14px">Txn ID</th><th style="padding:10px 14px">Booking ID</th><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Customer</th>
             <th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Amount</th><th style="padding:10px 14px">Method</th>
             <th style="padding:10px 14px">Reference</th><th style="padding:10px 14px">Status</th>
           </tr></thead>
@@ -228,6 +234,7 @@ async function loadTransactions() {
             ${transactions.map(t => `
               <tr style="border-top:1px solid var(--line)">
                 <td style="padding:10px 14px" class="mono helper-text">#${t.id}</td>
+                <td style="padding:10px 14px" class="mono">${esc(t.booking_ref || '—')}</td>
                 <td style="padding:10px 14px">${formatDate(t.booking_date)}</td>
                 <td style="padding:10px 14px">${t.customer_name}</td>
                 <td style="padding:10px 14px">${t.spa_name}</td>
@@ -244,35 +251,60 @@ async function loadTransactions() {
   } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
 }
 
-async function loadUsers() {
-  const el = document.getElementById('userList');
-  el.innerHTML = '<p>Loading…</p>';
+function userTable(users, cols, empty) {
+  const th = 'style="padding:10px 14px;white-space:nowrap"', td = 'style="padding:10px 14px;vertical-align:top"';
+  if (!users.length) return `<p class="helper-text">${empty}</p>`;
+  return `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
+    <thead><tr style="background:var(--stone-dark);text-align:left">${cols.map(c => `<th ${th}>${c[0]}</th>`).join('')}<th ${th}></th></tr></thead>
+    <tbody>${users.map(u => `<tr style="border-top:1px solid var(--line);cursor:pointer" onclick="openUserDetail(${u.id})">
+      ${cols.map(c => `<td ${td}>${c[1](u)}</td>`).join('')}
+      <td ${td}><button class="btn small outline" onclick="event.stopPropagation();openUserDetail(${u.id})">View</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+function matches(u, q, extra = '') { return !q || [u.name, u.email, u.phone, extra].some(v => String(v || '').toLowerCase().includes(q)); }
+async function loadCustomers() {
+  const el = document.getElementById('customerList');
   try {
-    const { users } = await API.get('/admin/users');
-    el.innerHTML = `
-      <div class="panel" style="padding:0;overflow:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
-          <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th style="padding:10px 14px">ID</th><th style="padding:10px 14px">Name</th><th style="padding:10px 14px">Email</th>
-            <th style="padding:10px 14px">Phone</th><th style="padding:10px 14px">Role</th><th style="padding:10px 14px">Joined</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${users.map(u => `
-              <tr style="border-top:1px solid var(--line);cursor:pointer" onclick="openUserDetail(${u.id})">
-                <td style="padding:10px 14px" class="mono helper-text">#${u.id}</td>
-                <td style="padding:10px 14px">${u.name}</td>
-                <td style="padding:10px 14px">${u.email}</td>
-                <td style="padding:10px 14px">${u.phone || '—'} ${u.phone_verified ? '✅' : ''}</td>
-                <td style="padding:10px 14px"><span class="badge approved" style="text-transform:capitalize">${u.role}</span></td>
-                <td style="padding:10px 14px" class="helper-text">${formatDate(u.created_at.slice(0,10))}</td>
-                <td style="padding:10px 14px"><button class="btn small outline" onclick="event.stopPropagation();openUserDetail(${u.id})">View</button></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
-  } catch (e) { el.innerHTML = `<p>${e.message}</p>`; }
+    const { users } = await API.get('/admin/users?role=customer');
+    const q = (document.getElementById('custSearch').value || '').trim().toLowerCase();
+    const list = users.filter(u => matches(u, q));
+    el.innerHTML = `<p class="helper-text">${users.length} customer${users.length !== 1 ? 's' : ''}${q ? ` · ${list.length} matching` : ''}</p>` + userTable(list, [
+      ['ID', u => `<span class="mono helper-text">#${u.id}</span>`],
+      ['Name', u => esc(u.name)],
+      ['Contact', u => `${esc(u.email)}<div class="helper-text" style="margin:0">${esc(u.phone || '—')} ${u.phone_verified ? '✅' : ''}</div>`],
+      ['Bookings', u => u.booking_count],
+      ['Total spent', u => `<span class="mono">${money(u.total_spent)}</span>`],
+      ['Last booking', u => u.last_booking ? formatDate(u.last_booking) : '—'],
+      ['Joined', u => formatDate(u.created_at)],
+    ], q ? 'No customers match your search.' : 'No customers yet.');
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function loadOwners() {
+  const el = document.getElementById('ownerList');
+  try {
+    const { users } = await API.get('/admin/users?role=owner');
+    const q = (document.getElementById('ownerSearch').value || '').trim().toLowerCase();
+    const list = users.filter(u => matches(u, q, u.spa_names));
+    el.innerHTML = `<p class="helper-text">${users.length} spa owner${users.length !== 1 ? 's' : ''}${q ? ` · ${list.length} matching` : ''}</p>` + userTable(list, [
+      ['ID', u => `<span class="mono helper-text">#${u.id}</span>`],
+      ['Name', u => esc(u.name)],
+      ['Contact', u => `${esc(u.email)}<div class="helper-text" style="margin:0">${esc(u.phone || '—')} ${u.phone_verified ? '✅' : ''}</div>`],
+      ['Spas', u => `${u.spa_count} total · ${u.live_spas || 0} live${u.pending_spas ? ` · <span class="badge pending">${u.pending_spas} pending</span>` : ''}<div class="helper-text" style="margin:0">${esc(u.spa_names || '')}</div>`],
+      ['Joined', u => formatDate(u.created_at)],
+    ], q ? 'No owners match your search.' : 'No spa owners yet.');
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function downloadBackup() {
+  const btn = document.getElementById('backupBtn'); btn.disabled = true; btn.textContent = 'Preparing…';
+  try {
+    const res = await fetch('/api/admin/backup', { headers: { Authorization: 'Bearer ' + API.token() } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Backup failed.');
+    const blob = await res.blob();
+    const name = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/)?.[1] || 'bookmyspa-backup.db';
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('Backup downloaded. Keep it somewhere safe — it contains customer data.');
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '⬇ Download backup'; }
 }
 
 async function openUserDetail(id) {

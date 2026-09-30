@@ -108,6 +108,20 @@ using their phone's GPS, and customers still get an embedded map and
 - **Featured spas** are sold by the admin for a date range (Admin → ⭐ Featured). Live placements get a "Featured" badge, lead the Featured sort (higher placement fee first), and appear in the homepage Featured strip — but only to customers within 30 km, so placements act as local advertising. They're labelled "Promoted listings".
 - **Nearby** always uses the customer's position right now (fresh GPS reading, never cached) and sorts purely by distance; customers can also pick an area by search if a Google Maps key is set.
 
+## Booking IDs, password reset, backups & safe updates
+
+- **Booking IDs:** every booking gets a unique ID like `BMS-261001-K7QX` (date + 4 unambiguous characters). It's shown to customers, owners and admins, included in confirmation messages, and searchable in Admin → Bookings and the partner Bookings tab. Bookings made before this feature get IDs automatically on the first start after updating.
+- **Forgot password:** customers and partners reset with a 6-digit SMS code to their registered mobile (needs MSG91 in production). Resetting signs out every other session on that account.
+  - **Admin recovery:** set `ADMIN_PASSWORD_RESET=<new password>` (with `ADMIN_EMAIL`) in Railway and redeploy, then **remove the variable**.
+- **Backups:** Admin → **⬇ Download backup** downloads a complete copy of the database (spas, accounts, bookings, reviews, payments…). Take one before every update.
+  - Uploaded photos/videos live separately in `data/uploads/` on the Railway volume.
+  - Keep backups private; they contain customer data.
+- **Updates never touch existing data:**
+  - All database changes are additive: new tables and columns only, never deletes or rewrites.
+  - Demo data is only created on an empty database.
+  - Each release is tested by upgrading databases created by older versions and confirming every existing row is byte-for-byte unchanged and old passwords still work.
+  - Your data survives redeploys only if the Railway **volume** stays attached at `/app/data`. Don't delete it.
+
 ## Commission
 
 - Commission is a percentage of what the customer actually paid (after discounts and coupons). The rate is locked onto each booking when it's made.

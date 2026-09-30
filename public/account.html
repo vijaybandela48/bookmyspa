@@ -68,6 +68,7 @@ async function load() {
             <div>
               <h4>${b.service_name}</h4>
               <div class="sub">${b.spa_name} · ${b.spa_city}</div>
+              ${b.booking_ref ? `<div class="mono" style="font-size:12.5px;color:var(--plum);margin-top:3px">Booking ID: ${esc(b.booking_ref)}</div>` : ''}
             </div>
             <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} applied</div>` : ''}</div>
           </div>

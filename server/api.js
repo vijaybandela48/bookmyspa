@@ -1,7 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, hashPassword, verifyPassword, recomputeSpaRating } = require('./db');
+const { db, hashPassword, verifyPassword, recomputeSpaRating, assignBookingRef } = require('./db');
+const os = require('node:os');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
@@ -463,6 +464,50 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION });
     }
 
+    // ---------------- FORGOT PASSWORD (SMS code to the registered mobile) ----------------
+    // Step 1 reuses /auth/otp/send with purpose 'login'. Step 2 below sets the new password.
+    if (parts[1] === 'auth' && parts[2] === 'password' && parts[3] === 'reset' && req.method === 'POST') {
+      if (!checkRateLimit(req, { keyPrefix: 'pw_reset', maxRequests: 10, windowMs: 15 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes and try again.' });
+      }
+      if (!otpAvailable()) return sendJSON(res, 503, { error: 'Password reset by SMS is not available right now. Please contact support.' });
+      const body = await parseBody(req);
+      const phone = normalizePhone(body.phone);
+      const newPassword = body.newPassword;
+      if (!phone) return sendJSON(res, 400, { error: 'Enter your registered mobile number.' });
+      if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 200) return sendJSON(res, 400, { error: 'New password must be at least 8 characters.' });
+      const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+      if (!u) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
+      if (u.role === 'admin') return sendJSON(res, 403, { error: 'Admin passwords can only be reset from the server (see README).' });
+      const portalErr = checkPortal(u, body.portal);
+      if (portalErr) return sendJSON(res, 403, { error: portalErr });
+      const otpResult = verifyOtp(phone, body.code, 'login');
+      if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
+      const { hash, salt } = hashPassword(newPassword);
+      db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_changed_at = datetime('now'), phone_verified = 1 WHERE id = ?").run(hash, salt, u.id);
+      const token = sign({ id: u.id, role: u.role, name: u.name });
+      return sendJSON(res, 200, { message: 'Password updated. You are now logged in.', token, user: publicUser({ ...u, phone_verified: 1 }) });
+    }
+
+    // ---------------- ADMIN: DATABASE BACKUP ----------------
+    // Downloads a consistent snapshot of the entire database (all spas, accounts, bookings, reviews...).
+    if (parts[1] === 'admin' && parts[2] === 'backup' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const tmp = path.join(os.tmpdir(), `bookmyspa-backup-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.db`);
+      db.exec(`VACUUM INTO '${tmp}'`);
+      const stamp = localNow().date;
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="bookmyspa-backup-${stamp}.db"`,
+        'Content-Length': fs.statSync(tmp).size,
+      });
+      const stream = fs.createReadStream(tmp);
+      stream.pipe(res);
+      stream.on('close', () => fs.unlink(tmp, () => {}));
+      return;
+    }
+
     // ---------------- AUTH ----------------
     // Sends a 6-digit code by SMS. Used before registration (to verify a new
     // phone) and before OTP login (to prove you own an existing account's phone).
@@ -748,6 +793,7 @@ async function handleApi(req, res, pathname, query) {
            VALUES (?,?,?,?,?,?,?,?,?,'confirmed','unpaid','pay_at_venue')`
         ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
       applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
+      assignBookingRef(Number(info.lastInsertRowid));
 
         if (appliedCode) {
           db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(spaId, appliedCode);
@@ -770,6 +816,7 @@ async function handleApi(req, res, pathname, query) {
          VALUES (?,?,?,?,?,?,?,?,?,'pending_payment','unpaid','online')`
       ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
       applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
+      assignBookingRef(Number(info.lastInsertRowid));
 
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
       return sendJSON(res, 201, { booking, message: 'Slot held. Complete payment within 10 minutes to confirm.' });
@@ -1536,7 +1583,28 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'admin' && parts[2] === 'users' && parts.length === 3 && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
-      const users = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at FROM users ORDER BY created_at DESC').all();
+      const role = query.get('role');
+      let users;
+      if (role === 'customer') {
+        users = db.prepare(
+          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at,
+                  COUNT(b.id) AS booking_count,
+                  COALESCE(SUM(CASE WHEN b.payment_status = 'paid' THEN b.amount ELSE 0 END), 0) AS total_spent,
+                  MAX(b.booking_date) AS last_booking
+           FROM users u LEFT JOIN bookings b ON b.customer_id = u.id
+           WHERE u.role = 'customer' GROUP BY u.id ORDER BY u.created_at DESC`).all();
+      } else if (role === 'owner') {
+        users = db.prepare(
+          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at,
+                  COUNT(s.id) AS spa_count,
+                  SUM(CASE WHEN s.status = 'approved' THEN 1 ELSE 0 END) AS live_spas,
+                  SUM(CASE WHEN s.status = 'pending' THEN 1 ELSE 0 END) AS pending_spas,
+                  GROUP_CONCAT(s.name, ', ') AS spa_names
+           FROM users u LEFT JOIN spas s ON s.owner_id = u.id
+           WHERE u.role = 'owner' GROUP BY u.id ORDER BY u.created_at DESC`).all();
+      } else {
+        users = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at FROM users ORDER BY created_at DESC').all();
+      }
       return sendJSON(res, 200, { users });
     }
 
@@ -1590,7 +1658,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
       const rows = db.prepare(
-        `SELECT p.*, b.spa_id, b.service_id, b.booking_date, b.start_time, b.payment_mode,
+        `SELECT p.*, b.booking_ref, b.spa_id, b.service_id, b.booking_date, b.start_time, b.payment_mode,
                 s.name as spa_name, sv.name as service_name, u.name as customer_name, u.email as customer_email
          FROM payments p
          JOIN bookings b ON b.id = p.booking_id
@@ -1607,10 +1675,11 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
       const rows = db.prepare(
-        `SELECT b.*, s.name as spa_name, sv.name as service_name, u.name as customer_name
+        `SELECT b.*, s.name as spa_name, sv.name as service_name, u.name as customer_name, u.phone as customer_phone
          FROM bookings b JOIN spas s ON s.id = b.spa_id JOIN services sv ON sv.id = b.service_id JOIN users u ON u.id = b.customer_id
-         ORDER BY b.created_at DESC LIMIT 200`
-      ).all();
+         WHERE (? = '' OR b.booking_ref LIKE ? OR u.name LIKE ? OR u.phone LIKE ? OR u.email LIKE ? OR s.name LIKE ?)
+         ORDER BY b.created_at DESC LIMIT 300`
+      ).all(...(() => { const q = String(query.get('q') || '').trim(); const like = `%${q}%`; return [q, like, like, like, like, like]; })());
       return sendJSON(res, 200, { bookings: rows });
     }
 

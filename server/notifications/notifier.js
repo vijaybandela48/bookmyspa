@@ -24,8 +24,9 @@
 
 const { db } = require('../db');
 
-function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress, payAtVenue }) {
-  return `Hi ${customerName}, your booking is confirmed!\n\n` +
+function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress, payAtVenue, bookingRef }) {
+  return `Hi ${customerName}, your booking is confirmed!\n` +
+    (bookingRef ? `Booking ID: ${bookingRef}\n\n` : `\n`) +
     `${serviceName} at ${spaName}\n` +
     `${date} at ${startTime}\n` +
     (payAtVenue ? `Amount due at the spa: Rs. ${amount}\n` : `Amount paid: Rs. ${amount}\n`) +
@@ -99,6 +100,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     amount: booking.amount,
     spaAddress: spa.address,
     payAtVenue: booking.payment_mode === 'pay_at_venue',
+    bookingRef: booking.booking_ref,
   });
 
   let result;
@@ -114,6 +116,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
           name: customer.name.split(' ')[0], service: service.name, spa: spa.name,
           date: prettyDate(booking.booking_date), time: prettyTime(booking.start_time), amount: String(booking.amount),
           payment: booking.payment_mode === 'pay_at_venue' ? 'payable at the spa' : 'paid',
+          ref: booking.booking_ref || '',
         })
       : await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_SMS_FROM });
   } else if (channel === 'whatsapp') {

@@ -60,6 +60,14 @@ function requireAuth(req, res, roles = null) {
     sendJSON(res, 401, { error: 'Not authenticated. Please log in.' });
     return null;
   }
+  // Sessions issued before the latest password change (or for deleted accounts) are no longer valid.
+  const { db } = require('./db');
+  const row = db.prepare('SELECT role, password_changed_at FROM users WHERE id = ?').get(user.id);
+  if (!row || row.role !== user.role ||
+      (row.password_changed_at && Date.parse(row.password_changed_at.replace(' ', 'T') + 'Z') > user.iat * 1000)) {
+    sendJSON(res, 401, { error: 'Your session has expired. Please log in again.' });
+    return null;
+  }
   if (roles && !roles.includes(user.role)) {
     sendJSON(res, 403, { error: 'You do not have permission to do that.' });
     return null;

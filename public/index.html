@@ -48,7 +48,7 @@
   <div class="tabs">
     <div class="tab" data-sort="nearby" onclick="setSortMode('nearby')">📍 Nearby</div>
     <div class="tab" data-sort="featured" onclick="setSortMode('featured')">⭐ Featured</div>
-    <div class="tab" data-sort="rating" onclick="setSortMode('rating')">🏆 Top rated</div>
+    <div class="tab" data-sort="rating" onclick="setSortMode('rating')">🏆 All spas · Top rated</div>
   </div>
   <div class="grid" id="spaGrid"><p>Loading spas…</p></div>
 </div>
@@ -62,7 +62,7 @@ renderFooter();
 
 const FEATURED_RADIUS_KM = 30;
 let userLocation = savedLocation();
-let sortMode = userLocation ? 'nearby' : 'featured';
+let sortMode = userLocation ? 'nearby' : 'rating';
 
 async function loadCities() {
   try {
@@ -97,6 +97,7 @@ function spaQuery(extra = {}) {
 }
 
 async function loadFeatured() {
+  if (sortMode === 'featured') { document.getElementById('featuredWrap').style.display = 'none'; return; } // the tab itself lists them
   try {
     let { spas } = await API.get(spaQuery({ sort: 'featured', featured: '1' }));
     // Featured placements are local advertising: when we know where the customer is,
@@ -112,11 +113,13 @@ async function loadSpas() {
   grid.innerHTML = '<p>Loading spas…</p>';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.sort === sortMode));
   document.getElementById('resultsEyebrow').textContent =
-    sortMode === 'nearby' ? `Nearest first · from ${userLocation ? userLocation.label : 'you'}` : sortMode === 'rating' ? 'Top rated by customers' : 'Featured first';
+    sortMode === 'nearby' ? `Nearest first · from ${userLocation ? userLocation.label : 'you'}` : sortMode === 'rating' ? 'All spas · top rated first' : 'Featured spas only · promoted listings';
   try {
-    const { spas } = await API.get(spaQuery({ sort: sortMode }));
+    const { spas } = await API.get(spaQuery(sortMode === 'featured' ? { sort: 'featured', featured: '1' } : { sort: sortMode }));
     grid.innerHTML = spas.length ? spas.map(spaCard).join('')
-      : `<div class="empty-state" style="grid-column:1/-1"><div class="big">🧴</div><p>No spas found. Try a different search or city.</p></div>`;
+      : sortMode === 'featured'
+        ? `<div class="empty-state" style="grid-column:1/-1"><div class="big">⭐</div><p>No featured spas right now.</p><button class="btn small outline" onclick="setSortMode('rating')">See all spas</button></div>`
+        : `<div class="empty-state" style="grid-column:1/-1"><div class="big">🧴</div><p>No spas found. Try a different search or city.</p></div>`;
   } catch (e) { grid.innerHTML = `<p>Could not load spas: ${esc(e.message)}</p>`; }
 }
 
@@ -173,7 +176,7 @@ async function showAreaSearch() {
 
 function setSortMode(mode) {
   if (mode === 'nearby' && !userLocation) { useMyLocation(); return; }
-  sortMode = mode; loadSpas();
+  sortMode = mode; loadSpas(); loadFeatured();
 }
 function doSearch() { loadSpas(); loadFeatured(); }
 document.getElementById('searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });

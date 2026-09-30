@@ -122,8 +122,8 @@ function renderNav(active) {
   let right = '';
   if (PORTAL === 'customer') {
     right = user
-      ? `<a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
-      : `<a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
+      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
+      : `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
   } else if (PORTAL === 'partner') {
     right = user
       ? `<a href="/partner/dashboard.html" class="nav-link ${active === 'dashboard' ? 'active' : ''}">Dashboard</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`

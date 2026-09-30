@@ -400,6 +400,56 @@ function seedDemoData(mkUser) {
   console.log('  customer@bookmyspa.demo / customer123 (customer)');
 }
 
-seed();
+// ---- Additive migrations (never drop or rewrite existing data) ----
+try {
+  const bcols = db.prepare("PRAGMA table_info(bookings)").all().map((c) => c.name);
+  if (!bcols.includes('booking_ref')) db.exec('ALTER TABLE bookings ADD COLUMN booking_ref TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_ref ON bookings(booking_ref) WHERE booking_ref IS NOT NULL');
+  const ucols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!ucols.includes('password_changed_at')) db.exec('ALTER TABLE users ADD COLUMN password_changed_at TEXT');
+} catch (e) { console.error('Migration error:', e.message); }
 
-module.exports = { db, hashPassword, verifyPassword, recomputeSpaRating };
+// Human-friendly booking/order ID, e.g. BMS-260926-K7QX (date in IST + 4 unambiguous characters).
+const REF_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function generateBookingRef(createdAt) {
+  const t = createdAt ? Date.parse(String(createdAt).replace(' ', 'T') + 'Z') : Date.now();
+  const d = new Date((isNaN(t) ? Date.now() : t) + 330 * 60000).toISOString().slice(2, 10).replace(/-/g, '');
+  for (let i = 0; i < 50; i++) {
+    let code = '';
+    for (let k = 0; k < 4; k++) code += REF_CHARS[crypto.randomInt(REF_CHARS.length)];
+    const ref = `BMS-${d}-${code}`;
+    if (!db.prepare('SELECT 1 FROM bookings WHERE booking_ref = ?').get(ref)) return ref;
+  }
+  return `BMS-${d}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+}
+function assignBookingRef(bookingId) {
+  const b = db.prepare('SELECT booking_ref, created_at FROM bookings WHERE id = ?').get(bookingId);
+  if (!b || b.booking_ref) return b && b.booking_ref;
+  const ref = generateBookingRef(b.created_at);
+  db.prepare('UPDATE bookings SET booking_ref = ? WHERE id = ?').run(ref, bookingId);
+  return ref;
+}
+function backfillBookingRefs() {
+  const rows = db.prepare('SELECT id FROM bookings WHERE booking_ref IS NULL').all();
+  for (const r of rows) assignBookingRef(r.id);
+  if (rows.length) console.log(`Assigned booking IDs to ${rows.length} existing booking(s).`);
+}
+
+seed();
+backfillBookingRefs();
+
+// ---- Admin password recovery ----
+// Set ADMIN_PASSWORD_RESET=<new password> (with ADMIN_EMAIL) in Railway and redeploy to
+// reset the admin password. Remove the variable afterwards.
+if (process.env.ADMIN_PASSWORD_RESET && process.env.ADMIN_EMAIL) {
+  const admin = db.prepare("SELECT id FROM users WHERE lower(email) = lower(?) AND role = 'admin'").get(process.env.ADMIN_EMAIL);
+  if (!admin) console.warn('ADMIN_PASSWORD_RESET is set but no admin account matches ADMIN_EMAIL.');
+  else if (String(process.env.ADMIN_PASSWORD_RESET).length < 8) console.warn('ADMIN_PASSWORD_RESET must be at least 8 characters — not applied.');
+  else {
+    const { hash, salt } = hashPassword(process.env.ADMIN_PASSWORD_RESET);
+    db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_changed_at = datetime('now') WHERE id = ?").run(hash, salt, admin.id);
+    console.warn('\n*** Admin password was reset from ADMIN_PASSWORD_RESET. REMOVE that variable from Railway now. ***\n');
+  }
+}
+
+module.exports = { db, hashPassword, verifyPassword, recomputeSpaRating, assignBookingRef };
