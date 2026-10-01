@@ -86,6 +86,8 @@ each feature on automatically.
 | `COMMISSION_PERCENT` | Default platform commission (default 10). Per-spa overrides in Admin → Commission & payouts |
 | `PARTNER_URL` | Public URL of the partner portal, e.g. `https://partner.bookmyspa.in` |
 | `TZ_OFFSET_MINUTES` | Business timezone offset (default 330 = IST) |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (+ optional `BACKUP_S3_REGION` default `auto`, `BACKUP_S3_PREFIX`) | Optional offsite copy of every backup (Cloudflare R2, Backblaze B2, AWS S3…) |
+| `RESTORE_BACKUP` / `RESTORE_OFFSITE_KEY` | One-time restore of the database; remove after use (see Backups) |
 
 **MSG91 setup:** India requires DLT registration. Register your business and
 sender ID on a DLT portal, get your OTP and booking templates approved, then
@@ -113,10 +115,26 @@ using their phone's GPS, and customers still get an embedded map and
 - **Booking IDs:** every booking gets a unique ID like `BMS-261001-K7QX` (date + 4 unambiguous characters). It's shown to customers, owners and admins, included in confirmation messages, and searchable in Admin → Bookings and the partner Bookings tab. Bookings made before this feature get IDs automatically on the first start after updating.
 - **Forgot password:** customers and partners reset with a 6-digit SMS code to their registered mobile (needs MSG91 in production). Resetting signs out every other session on that account.
   - **Admin recovery:** set `ADMIN_PASSWORD_RESET=<new password>` (with `ADMIN_EMAIL`) in Railway and redeploy, then **remove the variable**.
-- **Backups:** Admin → **⬇ Download backup** downloads a complete copy of the database (spas, accounts, bookings, reviews, payments…). Take one before every update.
-  - Uploaded photos/videos live separately in `data/uploads/` on the Railway volume.
-  - Keep backups private; they contain customer data.
+- **Backups (built in — no Railway Pro plan needed):**
+  - **Before every update**, the database is snapshotted automatically, *before* any migration runs. Roll-back is always possible.
+  - **Every night (~3 am IST)** a full backup is taken and integrity-checked. The newest 30 nightly, 20 manual and 10 pre-update backups are kept in `data/backups/`.
+  - **Admin → 💾 Backups** shows them all, with *Back up now* and *Download*. The dashboard shows a warning banner if backups ever stop working.
+  - They live on the same Railway volume as your data, which protects against bad updates and mistakes but **not** against the volume itself being deleted. For that, set up the free offsite copy below.
+  - **Photos/videos** (`data/uploads/`) are not part of database backups.
+- **Offsite backups (recommended, free):** with these variables set, every backup is *also* uploaded to a storage bucket outside Railway:
+  1. In Cloudflare: **R2 Object Storage** → *Create bucket* (e.g. `bookmyspa-backups`). R2 asks you to enable it and add a payment method first; the free tier (10 GB) is far more than a database needs, so you won't be charged in practice.
+  2. R2 → **Manage API Tokens** → *Create API token* → permission **Object Read & Write**, scoped to that bucket. Copy the **Access Key ID**, **Secret Access Key**, and your account's S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
+  3. In Railway → Variables add `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (and `BACKUP_S3_REGION=auto`).
+  4. Redeploy, open Admin → Backups, click **Back up now**. The *Offsite copy* card should turn **ON**.
+  - Any S3-compatible service works (e.g. Backblaze B2: use its S3 endpoint and region).
+  - Optional: add a lifecycle rule on the bucket to auto-delete files after e.g. 90 days.
+- **Restoring:** in Railway → Variables set `RESTORE_BACKUP` to a file name shown in Admin → Backups (or `RESTORE_OFFSITE_KEY` to an object key in your bucket, e.g. `bookmyspa-backups/bookmyspa-2026-10-01-030000-daily.db`), redeploy, check the site, then **delete the variable**.
+  - The current database is saved first as a "before-restore" backup, so a restore can be undone.
+  - A file that isn't a healthy BookMySpa database is refused, and the server keeps running on your existing data.
+  - If the variable is left set, it won't re-apply on later restarts.
+  - If the whole volume was lost: create a new volume mounted at `/app/data`, then restore with `RESTORE_OFFSITE_KEY`.
 - **Updates never touch existing data:**
+  - An automatic pre-update snapshot is saved before every start (see Backups).
   - All database changes are additive: new tables and columns only, never deletes or rewrites.
   - Demo data is only created on an empty database.
   - Each release is tested by upgrading databases created by older versions and confirming every existing row is byte-for-byte unchanged and old passwords still work.

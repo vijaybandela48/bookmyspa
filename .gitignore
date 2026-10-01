@@ -10,3 +10,4 @@ data/*.db-shm
 data/*.db-wal
 data/uploads/spas/*
 !data/uploads/spas/.gitkeep
+data/backups/

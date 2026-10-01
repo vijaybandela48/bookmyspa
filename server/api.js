@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { db, hashPassword, verifyPassword, recomputeSpaRating, assignBookingRef } = require('./db');
 const os = require('node:os');
+const backupMod = require('./backup');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
@@ -487,6 +488,31 @@ async function handleApi(req, res, pathname, query) {
       db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_changed_at = datetime('now'), phone_verified = 1 WHERE id = ?").run(hash, salt, u.id);
       const token = sign({ id: u.id, role: u.role, name: u.name });
       return sendJSON(res, 200, { message: 'Password updated. You are now logged in.', token, user: publicUser({ ...u, phone_verified: 1 }) });
+    }
+
+    // ---------------- ADMIN: AUTOMATIC BACKUPS ----------------
+    if (parts[1] === 'admin' && parts[2] === 'backups' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      return sendJSON(res, 200, { backups: backupMod.listBackups(), status: backupMod.readStatus(), offsite: backupMod.offsiteSummary(), keep: backupMod.KEEP });
+    }
+    if (parts[1] === 'admin' && parts[2] === 'backups' && parts.length === 3 && req.method === 'POST') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      if (!checkRateLimitByKey('backup_now', { maxRequests: 10, windowMs: 60 * 60 * 1000 })) return sendJSON(res, 429, { error: 'Too many manual backups. Try again later.' });
+      const b = await backupMod.runBackup(db, 'manual');
+      const off = backupMod.offsiteSummary().configured;
+      return sendJSON(res, 201, { message: off ? (b.offsite && b.offsite.lastError ? 'Backup saved on the server, but the offsite upload failed: ' + b.offsite.lastError.message : 'Backup saved and copied offsite.') : 'Backup saved on the server.', name: b.name, size: b.size });
+    }
+    if (parts[1] === 'admin' && parts[2] === 'backups' && parts.length === 4 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      let name; try { name = decodeURIComponent(parts[3]); } catch { return sendJSON(res, 400, { error: 'Invalid name.' }); }
+      const file = path.join(backupMod.BACKUP_DIR, name);
+      if (!backupMod.NAME_RE.test(name) || !fs.existsSync(file)) return sendJSON(res, 404, { error: 'Backup not found.' });
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': fs.statSync(file).size });
+      fs.createReadStream(file).pipe(res);
+      return;
     }
 
     // ---------------- ADMIN: DATABASE BACKUP ----------------
@@ -1716,7 +1742,12 @@ async function handleApi(req, res, pathname, query) {
       const commissionEarned = round2(db.prepare(
         `SELECT COALESCE(SUM(commission_amount),0) c FROM bookings WHERE (status = 'completed' OR (status = 'confirmed' AND booking_date < ?)) AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
       ).get(localNow().date).c);
-      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned,
+      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned, backup: (() => {
+          const st = backupMod.readStatus(); const at = st.lastLocal && st.lastLocal.at;
+          return { lastAt: at || null, ageHours: at ? Math.round(((Date.now() - Date.parse(at)) / 3600000) * 10) / 10 : null, offsite: backupMod.offsiteSummary().configured,
+                   lastOffsiteAt: st.lastOffsite ? st.lastOffsite.at : null, lastOffsiteError: st.lastOffsiteError ? st.lastOffsiteError.message : null,
+                   lastError: st.lastError ? st.lastError.message : null, restoreError: st.restoreError ? st.restoreError.message : null };
+        })(),
         featuredRevenue: round2(db.prepare('SELECT COALESCE(SUM(amount),0) a FROM featured_placements WHERE cancelled = 0').get().a),
         activeFeatured: db.prepare('SELECT COUNT(DISTINCT spa_id) c FROM featured_placements WHERE cancelled = 0 AND starts_on <= ? AND ends_on >= ?').get(localNow().date, localNow().date).c });
     }

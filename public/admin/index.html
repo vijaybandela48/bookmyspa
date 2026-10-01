@@ -19,6 +19,7 @@
     <button class="btn small outline" onclick="downloadBackup()" id="backupBtn" title="Download a full copy of the database">⬇ Download backup</button>
   </div>
 
+  <div id="backupBanner"></div>
   <div class="stat-grid" id="stats" style="margin-top:24px"></div>
 
   <div class="tabs">
@@ -30,6 +31,7 @@
     <div class="tab" data-tab="settlements" onclick="switchTab('settlements')">💸 Commission &amp; payouts</div>
     <div class="tab" data-tab="featured" onclick="switchTab('featured')">⭐ Featured</div>
     <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">📝 Reviews</div>
+    <div class="tab" data-tab="backups" onclick="switchTab('backups')">💾 Backups</div>
     <div class="tab" data-tab="messages" onclick="switchTab('messages')">✉️ Messages <span id="msgBadge"></span></div>
   </div>
 
@@ -41,6 +43,7 @@
   <div id="tab-settlements" style="display:none"><div id="settlementList"><p>Loading…</p></div></div>
   <div id="tab-featured" style="display:none"><div id="featuredAdmin"><p>Loading…</p></div></div>
   <div id="tab-reviews" style="display:none"><div id="reviewAdmin"><p>Loading…</p></div></div>
+  <div id="tab-backups" style="display:none"><div id="backupPanel"><p>Loading…</p></div></div>
   <div id="tab-messages" style="display:none"><div id="messageList"><p>Loading…</p></div></div>
 </div>
 
@@ -57,7 +60,7 @@ const AUTH_OK = API.requireRole();
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  ['spas','bookings','transactions','customers','owners','settlements','featured','reviews','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
+  ['spas','bookings','transactions','customers','owners','settlements','featured','reviews','backups','messages'].forEach(t => document.getElementById('tab-'+t).style.display = t === name ? 'block' : 'none');
   if (name === 'bookings') loadBookings();
   if (name === 'transactions') loadTransactions();
   if (name === 'customers') loadCustomers();
@@ -66,6 +69,7 @@ function switchTab(name) {
   if (name === 'settlements') loadSettlements();
   if (name === 'featured') loadFeaturedAdmin();
   if (name === 'reviews') loadReviewAdmin();
+  if (name === 'backups') loadBackups();
 }
 
 function closeDetailModal() { document.getElementById('detailModal').classList.remove('open'); }
@@ -85,6 +89,12 @@ async function loadStats() {
       <div class="stat-card"><div class="num">⭐ ${money(s.featuredRevenue)}</div><div class="label">Featured revenue · ${s.activeFeatured} live</div></div>
       <div class="stat-card"><div class="num">✉️ ${s.newMessages}</div><div class="label">New messages</div></div>
     `;
+    const b = s.backup || {}, ban = document.getElementById('backupBanner');
+    const warn = (bg, border, html) => `<div class="panel" style="margin-top:18px;padding:14px 18px;background:${bg};border-color:${border};cursor:pointer" onclick="switchTab('backups')">${html}</div>`;
+    ban.innerHTML = b.restoreError ? warn('#F3DEDD', '#A03A34', `<strong>⚠️ Database restore failed:</strong> ${esc(b.restoreError)}`)
+      : (b.ageHours === null || b.ageHours > 36 || b.lastError) ? warn('#F3DEDD', '#A03A34', `<strong>⚠️ No recent automatic backup.</strong> ${b.lastError ? esc(b.lastError) : 'Open the Backups tab and click “Back up now”.'}`)
+      : b.lastOffsiteError ? warn('#F5E9D2', 'var(--gold)', `<strong>⚠️ Offsite backup is failing:</strong> ${esc(b.lastOffsiteError)}`)
+      : !b.offsite ? warn('#F5E9D2', 'var(--gold)', `<strong>💾 Backups are kept on your server volume only.</strong> Set up a free offsite copy so you’re protected even if the volume is lost → <u>Backups tab</u>`) : '';
     const badge = document.getElementById('msgBadge');
     badge.innerHTML = s.newMessages > 0 ? `<span class="badge pending" style="margin-left:2px">${s.newMessages}</span>` : '';
   } catch (e) { toast(e.message, 'error'); }
@@ -512,6 +522,59 @@ async function loadReviewAdmin() {
 async function setReviewHidden(id, hidden) {
   try { const r = await API.put(`/admin/reviews/${id}`, { hidden }); toast(r.message); loadReviewAdmin(); }
   catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Backups ----------------
+const kindLabel = { daily: 'Nightly', manual: 'Manual', 'pre-update': 'Before an update', 'before-restore': 'Before a restore' };
+function fmtBytes(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+function ago(iso) { if (!iso) return 'never'; const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return m < 2 ? 'just now' : m < 120 ? m + ' min ago' : m < 2880 ? Math.round(m / 60) + ' hours ago' : Math.round(m / 1440) + ' days ago'; }
+async function loadBackups() {
+  const el = document.getElementById('backupPanel');
+  try {
+    const { backups, status, offsite } = await API.get('/admin/backups');
+    const th = 'style="padding:10px 14px"';
+    el.innerHTML = `
+      <div class="two-col">
+        <div class="panel">
+          <h3>Automatic backups</h3>
+          <p class="helper-text" style="line-height:1.7;margin-bottom:12px">
+            ✅ A snapshot is taken <strong>automatically before every update</strong>, and a full backup <strong>every night (~3 am IST)</strong>. Each one is integrity-checked. Last backup: <strong>${ago(status.lastLocal && status.lastLocal.at)}</strong>.
+          </p>
+          <button class="btn gold" id="bkNow" onclick="backupNow()">Back up now</button>
+          <button class="btn outline" onclick="downloadBackup()" style="margin-left:6px">⬇ Download a fresh copy</button>
+        </div>
+        <div class="panel">
+          <h3>Offsite copy ${offsite.configured ? '<span class="badge confirmed">ON</span>' : '<span class="badge pending">not set up</span>'}</h3>
+          ${offsite.configured
+            ? `<p class="helper-text" style="line-height:1.7">Every backup is also uploaded to <strong>${esc(offsite.host)}</strong> / <span class="mono">${esc(offsite.bucket)}</span>.<br>Last upload: <strong>${ago(status.lastOffsite && status.lastOffsite.at)}</strong>${status.lastOffsiteError ? `<br><span style="color:#A03A34">Last error: ${esc(status.lastOffsiteError.message)}</span>` : ''}</p>`
+            : `<p class="helper-text" style="line-height:1.7">Backups currently live on the same Railway volume as your data. If that volume were ever deleted, the backups would go with it. Add the free <span class="mono">BACKUP_S3_*</span> settings (see README → “Offsite backups”) to also copy every backup to Cloudflare R2 or Backblaze B2.</p>`}
+        </div>
+      </div>
+      <h3 style="margin:22px 0 10px">Saved backups (${backups.length})</h3>
+      ${backups.length ? `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <thead><tr style="background:var(--stone-dark);text-align:left"><th ${th}>File</th><th ${th}>Type</th><th ${th}>Size</th><th ${th}>Taken</th><th ${th}></th></tr></thead>
+        <tbody>${backups.map(b => `<tr style="border-top:1px solid var(--line)">
+          <td ${th} class="mono">${esc(b.name)}</td><td ${th}>${kindLabel[b.kind] || b.kind}</td><td ${th}>${fmtBytes(b.size)}</td><td ${th}>${ago(b.created)}</td>
+          <td ${th}><button class="btn small outline" onclick="downloadBackupFile('${esc(b.name)}')">Download</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No backups yet — the first one is created automatically shortly after the server starts.</p>'}
+      <div class="panel" style="margin-top:18px"><h4 style="margin-bottom:6px">Need to restore?</h4>
+        <p class="helper-text" style="margin:0;line-height:1.7">In Railway → Variables add <span class="mono">RESTORE_BACKUP</span> = a file name from the list above (or <span class="mono">RESTORE_OFFSITE_KEY</span> for an offsite copy), redeploy, then <strong>delete the variable</strong>. Your current data is saved as a “before a restore” backup first, so a restore can itself be undone. Photos are not part of database backups.</p>
+      </div>`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function backupNow() {
+  const btn = document.getElementById('bkNow'); btn.disabled = true; btn.textContent = 'Backing up…';
+  try { const r = await API.post('/admin/backups'); toast(r.message); loadBackups(); loadStats(); }
+  catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'Back up now'; }
+}
+async function downloadBackupFile(name) {
+  try {
+    const res = await fetch('/api/admin/backups/' + encodeURIComponent(name), { headers: { Authorization: 'Bearer ' + API.token() } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Download failed.');
+    const blob = await res.blob();
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('Downloaded. Keep it private — it contains customer data.');
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 const messageStatusLabel = { new: 'New', read: 'Read', resolved: 'Resolved' };

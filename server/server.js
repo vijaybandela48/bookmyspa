@@ -2,7 +2,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
-const { handleApi } = require('./api');
+let handleApi; // loaded after any requested restore has been applied
+const backup = require('./backup');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -122,10 +123,21 @@ const server = http.createServer((req, res) => {
 process.on('uncaughtException', (err) => console.error('Uncaught exception (server kept running):', err));
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection (server kept running):', err));
 
-server.listen(PORT, () => {
-  console.log(`\n  BookMySpa platform running at http://localhost:${PORT}\n`);
-  console.log('  Demo logins:');
-  console.log('   Admin:   admin@bookmyspa.demo / admin123');
-  console.log('   Owner:   owner1@bookmyspa.demo / owner123');
-  console.log('   Customer: customer@bookmyspa.demo / customer123\n');
-});
+(async () => {
+  try { await backup.restoreIfRequested(); }
+  catch (e) {
+    console.error('\n*** RESTORE FAILED — continuing with the existing database: ' + e.message + ' ***\n');
+    backup.writeStatus({ restoreError: { at: new Date().toISOString(), message: e.message } });
+  }
+  ({ handleApi } = require('./api')); // opens the database (takes the pre-update snapshot, then migrates)
+  server.listen(PORT, () => {
+    console.log(`\n  BookMySpa platform running at http://localhost:${PORT}\n`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('  Demo logins:');
+      console.log('   Admin:   admin@bookmyspa.demo / admin123');
+      console.log('   Owner:   owner1@bookmyspa.demo / owner123');
+      console.log('   Customer: customer@bookmyspa.demo / customer123\n');
+    }
+    backup.startScheduler(require('./db').db);
+  });
+})();

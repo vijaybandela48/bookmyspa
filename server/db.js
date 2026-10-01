@@ -9,6 +9,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DB_PATH = path.join(DATA_DIR, 'spa_platform.db');
 
 const db = new DatabaseSync(DB_PATH);
+require('./backup').snapshotBeforeStart(db); // safety copy of the existing data BEFORE any update touches it
 db.exec('PRAGMA foreign_keys = ON;');
 
 db.exec(`
@@ -384,8 +385,8 @@ function seedDemoData(mkUser) {
     [spa3, 7, 1799, 4, 'Authentic Abhyanga with lovely warm oils. Parking nearby is tricky.', 15],
   ];
   for (const [spaId, serviceId, amount, rating, comment, daysAgo] of demoReviews) {
-    const b = db.prepare(`INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, status, payment_status, payment_mode)
-      VALUES (?,?,?,?,'11:00','12:00',?,'completed','paid','pay_at_venue')`).run(cust1, spaId, serviceId, pastDate(daysAgo), amount);
+    const b = db.prepare(`INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, status, payment_status, payment_mode, commission_percent, commission_amount)
+      VALUES (?,?,?,?,'11:00','12:00',?,'completed','paid','pay_at_venue',10,?)`).run(cust1, spaId, serviceId, pastDate(daysAgo), amount, Math.round(amount * 10) / 100);
     db.prepare('INSERT INTO reviews (booking_id, spa_id, customer_id, rating, comment) VALUES (?,?,?,?,?)').run(Number(b.lastInsertRowid), spaId, cust1, rating, comment);
   }
   [spa1, spa2, spa3, spa4].forEach(recomputeSpaRating);
