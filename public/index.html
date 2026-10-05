@@ -14,9 +14,20 @@
 <div id="sb-nav"></div>
 
 <section class="hero">
+  <div class="steam" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+  <svg class="jasmine" viewBox="0 0 240 280" aria-hidden="true">
+    <path pathLength="1" d="M18 272 C 52 222, 64 176, 104 140 S 170 84, 196 38"/>
+    <path pathLength="1" d="M104 140 C 128 150, 150 168, 158 196"/>
+    <path pathLength="1" d="M62 206 C 34 200, 22 178, 30 160 C 50 168, 62 184, 62 206 Z"/>
+    <path pathLength="1" d="M140 102 C 166 104, 182 90, 184 72 C 162 72, 146 84, 140 102 Z"/>
+    <path pathLength="1" d="M128 162 C 150 152, 168 160, 176 176 C 156 184, 138 178, 128 162 Z"/>
+    <g class="petals"><path class="petal" pathLength="1" transform="rotate(0 196 38)" d="M196 38 C 186 24, 190 10, 196 4 C 202 10, 206 24, 196 38 Z"/><path class="petal" pathLength="1" transform="rotate(72 196 38)" d="M196 38 C 186 24, 190 10, 196 4 C 202 10, 206 24, 196 38 Z"/><path class="petal" pathLength="1" transform="rotate(144 196 38)" d="M196 38 C 186 24, 190 10, 196 4 C 202 10, 206 24, 196 38 Z"/><path class="petal" pathLength="1" transform="rotate(216 196 38)" d="M196 38 C 186 24, 190 10, 196 4 C 202 10, 206 24, 196 38 Z"/><path class="petal" pathLength="1" transform="rotate(288 196 38)" d="M196 38 C 186 24, 190 10, 196 4 C 202 10, 206 24, 196 38 Z"/><path class="petal" pathLength="1" transform="rotate(36 158 196)" d="M158 196 C 150 185, 153 174, 158 169 C 163 174, 166 185, 158 196 Z"/><path class="petal" pathLength="1" transform="rotate(108 158 196)" d="M158 196 C 150 185, 153 174, 158 169 C 163 174, 166 185, 158 196 Z"/><path class="petal" pathLength="1" transform="rotate(180 158 196)" d="M158 196 C 150 185, 153 174, 158 169 C 163 174, 166 185, 158 196 Z"/><path class="petal" pathLength="1" transform="rotate(252 158 196)" d="M158 196 C 150 185, 153 174, 158 169 C 163 174, 166 185, 158 196 Z"/><path class="petal" pathLength="1" transform="rotate(324 158 196)" d="M158 196 C 150 185, 153 174, 158 169 C 163 174, 166 185, 158 196 Z"/>
+    </g>
+    <circle cx="196" cy="38" r="3"/><circle cx="158" cy="196" r="2.4"/><circle cx="210" cy="120" r="2"/><circle cx="84" cy="122" r="1.8"/>
+  </svg>
   <div class="wrap">
-    <h1>Book a massage or spa slot in seconds.</h1>
-    <p class="sub">Browse trusted spas near you, pick a service and time, pay online, and walk straight in — no calls, no waiting.</p>
+    <h1>Unwind nearby.<br>Book in seconds.</h1>
+    <p class="sub">Real spas around you, live availability and reviews from verified visits. Pay online, or pay at the spa.</p>
     <div class="search-bar">
       <input id="searchInput" placeholder="Search spas or treatments..." />
       <select id="cityInput"><option value="">All cities</option></select>
@@ -76,7 +87,7 @@ function spaCard(spa) {
   const cover = spa.cover_image_url ? `<img src="${esc(spa.cover_image_url)}" alt="${esc(spa.name)}" style="width:100%;height:100%;object-fit:cover">` : esc(spa.cover_emoji);
   return `
     <a class="spa-card" href="/spa.html?id=${spa.id}">
-      <div class="cover" style="${spa.cover_image_url ? 'padding:0' : ''}">${cover}${spa.featured ? '<span class="feat-badge">⭐ FEATURED</span>' : ''}</div>
+      <div class="cover" style="${spa.cover_image_url ? 'padding:0' : ''}">${cover}${spa.featured ? '<span class="feat-badge">⭐ Featured</span>' : ''}</div>
       <div class="body">
         <h3>${esc(spa.name)}</h3>
         <div class="meta">📍 ${esc(spa.address || spa.city)}${spa.distance_km != null ? ` · <span class="dist">${fmtDistance(spa.distance_km)}</span>` : ''}</div>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your profile — BookMySpa Partners</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap page-body" style="max-width:760px">
+  <h1>Your profile</h1>
+  <p class="helper-text" style="margin-bottom:22px">Keep your details up to date so spas and confirmations reach you.</p>
+  <div class="panel">
+    <h3>Personal details</h3>
+    <label for="pf_name">Full name</label><input id="pf_name" autocomplete="name" maxlength="80">
+    <label for="pf_email">Email</label><input id="pf_email" type="email" autocomplete="email" maxlength="120">
+    <button class="btn gold" style="margin-top:16px" onclick="saveDetails()">Save details</button>
+  </div>
+  <div class="panel">
+    <h3>Mobile number</h3>
+    <p class="helper-text" id="pf_phone_now"></p>
+    <label for="pf_phone">New mobile number</label>
+    <div style="display:flex;gap:8px"><input id="pf_phone" type="tel" inputmode="numeric" placeholder="10-digit mobile number"><button type="button" class="btn small outline" id="pf_send" onclick="sendPhoneOtp()" style="white-space:nowrap">Send code</button></div>
+    <div id="pf_otpbox" style="display:none"><label for="pf_code">Verification code</label><input id="pf_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"><p class="helper-text" id="pf_otpstatus"></p></div>
+    <button class="btn outline" style="margin-top:14px" onclick="savePhone()">Update number</button>
+  </div>
+  <div class="panel">
+    <h3>Change password</h3>
+    <label for="pf_cur">Current password</label><input type="password" id="pf_cur" autocomplete="current-password">
+    <label for="pf_new">New password</label><input type="password" id="pf_new" autocomplete="new-password" placeholder="At least 8 characters">
+    <label for="pf_new2">Confirm new password</label><input type="password" id="pf_new2" autocomplete="new-password">
+    <button class="btn outline" style="margin-top:16px" onclick="changePassword()">Change password</button>
+    <p class="helper-text">Changing your password signs you out on every other device.</p>
+  </div>
+</div>
+<div id="sb-footer"></div>
+<script src="/js/api.js"></script>
+<script>
+renderNav('profile'); renderFooter();
+let otpOn = false;
+if (API.requireRole()) init();
+async function init() {
+  const { user } = await API.get('/me');
+  document.getElementById('pf_name').value = user.name; document.getElementById('pf_email').value = user.email;
+  document.getElementById('pf_phone_now').textContent = user.phone ? `Current: ${user.phone} ${user.phone_verified ? '· verified ✓' : '· not verified'}` : 'No number on file yet.';
+  otpOn = !!(await getConfig()).otp;
+  document.getElementById('pf_send').style.display = otpOn ? '' : 'none';
+}
+async function saveDetails() {
+  try { const r = await API.put('/me', { name: document.getElementById('pf_name').value.trim(), email: document.getElementById('pf_email').value.trim() });
+    API.saveSession(r.token, r.user); renderNav('profile'); toast(r.message); } catch (e) { toast(e.message, 'error'); }
+}
+async function sendPhoneOtp() {
+  const btn = document.getElementById('pf_send'); btn.disabled = true;
+  try { const r = await API.post('/auth/otp/send', { phone: document.getElementById('pf_phone').value.trim(), purpose: 'registration' });
+    document.getElementById('pf_otpbox').style.display = 'block';
+    document.getElementById('pf_otpstatus').textContent = r.devCode ? `Code sent. (Development mode — your code is ${r.devCode})` : 'Code sent by SMS.';
+  } catch (e) { toast(e.message, 'error'); } finally { setTimeout(() => btn.disabled = false, 30000); }
+}
+async function savePhone() {
+  try { const r = await API.put('/me/phone', { phone: document.getElementById('pf_phone').value.trim(), otpCode: document.getElementById('pf_code').value.trim() });
+    toast(r.message); document.getElementById('pf_phone').value = ''; document.getElementById('pf_otpbox').style.display = 'none'; init(); } catch (e) { toast(e.message, 'error'); }
+}
+async function changePassword() {
+  const nw = document.getElementById('pf_new').value;
+  if (nw !== document.getElementById('pf_new2').value) return toast('New passwords do not match.', 'error');
+  try { const r = await API.put('/me/password', { currentPassword: document.getElementById('pf_cur').value, newPassword: nw });
+    API.saveSession(r.token, r.user); toast(r.message); ['pf_cur', 'pf_new', 'pf_new2'].forEach(id => document.getElementById(id).value = ''); } catch (e) { toast(e.message, 'error'); }
+}
+</script>
+</body>
+</html>

@@ -122,11 +122,11 @@ function renderNav(active) {
   let right = '';
   if (PORTAL === 'customer') {
     right = user
-      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
+      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><a href="/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
       : `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
   } else if (PORTAL === 'partner') {
     right = user
-      ? `<a href="/partner/dashboard.html" class="nav-link ${active === 'dashboard' ? 'active' : ''}">Dashboard</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
+      ? `<a href="/partner/dashboard.html" class="nav-link ${active === 'dashboard' ? 'active' : ''}">Dashboard</a><a href="/partner/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
       : `<a href="/partner/login.html" class="nav-link">Partner login</a><a href="/partner/register.html" class="nav-btn">List your spa</a>`;
   } else {
     right = user ? `<span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>` : '';
@@ -205,4 +205,23 @@ function loadGoogleMapsApi(key) {
     document.head.appendChild(s);
   });
   return _gmapsLoad;
+}
+
+
+// ---------------- Interface motion helpers ----------------
+// Nav gains depth once the page scrolls.
+window.addEventListener('scroll', () => {
+  const nav = document.getElementById('sb-nav');
+  if (nav) nav.classList.toggle('scrolled', window.scrollY > 8);
+}, { passive: true });
+
+// A short "bloom" that confirms a completed booking, then calls `then`.
+function celebrate(title, detail, then) {
+  const el = document.createElement('div');
+  el.className = 'bloom'; el.setAttribute('role', 'status');
+  el.innerHTML = `<div class="bloom-card"><div class="bloom-ring"><svg viewBox="0 0 60 60" aria-hidden="true"><circle cx="30" cy="30" r="30"/><path pathLength="1" d="M18 31 L26 39 L43 22"/></svg></div>
+    <h3 style="margin:0 0 6px">${esc(title)}</h3><p class="helper-text" style="margin:0">${esc(detail || '')}</p></div>`;
+  document.body.appendChild(el);
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  setTimeout(() => { el.remove(); if (then) then(); }, reduce ? 900 : 1900);
 }

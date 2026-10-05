@@ -86,6 +86,8 @@ each feature on automatically.
 | `COMMISSION_PERCENT` | Default platform commission (default 10). Per-spa overrides in Admin → Commission & payouts |
 | `PARTNER_URL` | Public URL of the partner portal, e.g. `https://partner.bookmyspa.in` |
 | `TZ_OFFSET_MINUTES` | Business timezone offset (default 330 = IST) |
+| `MSG91_REMINDER_TEMPLATE_ID` | Appointment-reminder SMS (~2 h before). Flow variables: `##name## ##service## ##spa## ##time## ##ref##` |
+| `MSG91_WHATSAPP_REMINDER_TEMPLATE` | Appointment-reminder WhatsApp template, 5 body variables: name, service, spa, time, directions link |
 | `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (+ optional `BACKUP_S3_REGION` default `auto`, `BACKUP_S3_PREFIX`) | Optional offsite copy of every backup (Cloudflare R2, Backblaze B2, AWS S3…) |
 | `RESTORE_BACKUP` / `RESTORE_OFFSITE_KEY` | One-time restore of the database; remove after use (see Backups) |
 
@@ -109,6 +111,35 @@ using their phone's GPS, and customers still get an embedded map and
 - **Reviews** can only be written by the customer who booked and visited (one per booking, within 60 days of the appointment). Spa ratings are calculated live from visible reviews; spas with none show "New". "Top rated" uses a weighted average so a single 5★ review can't outrank many strong ones. Owners can reply publicly; admins can hide abusive reviews (which recalculates the rating).
 - **Featured spas** are sold by the admin for a date range (Admin → ⭐ Featured). Live placements get a "Featured" badge, lead the Featured sort (higher placement fee first), and appear in the homepage Featured strip — but only to customers within 30 km, so placements act as local advertising. They're labelled "Promoted listings".
 - **Nearby** always uses the customer's position right now (fresh GPS reading, never cached) and sorts purely by distance; customers can also pick an area by search if a Google Maps key is set.
+
+## Operations features
+
+- **Owners can edit everything after listing:** spa name, description, contact, address, opening hours, and each service's name, price, duration and room type. Price changes apply to new bookings only.
+- **Weekly day off and holidays:** owners pick weekly closed days and add specific closed dates with a reason ("Closed — Diwali"). Customers see the reason and can't book those days. Existing bookings on a newly closed date are kept, and the owner is told how many to contact.
+- **Calendar and walk-ins (Partner → 📅 Calendar):** a day view with one column per room type, showing every booking (colour-coded paid, pay-at-spa or completed) and every blocked period.
+  - Owners block time for walk-ins, breaks or maintenance, for some rooms of a type or the whole spa.
+  - Blocked time can't be booked online.
+  - The system refuses blocks that would overbook rooms, or a whole-spa block over existing bookings.
+- **Free-cancellation window:** each spa chooses until when customers may cancel or reschedule (any time, or 2/4/12/24/48 hours before; default 4). After that, the customer is asked to call the spa. Online payments cancelled in time are refunded automatically.
+- **Rescheduling:** customers move a confirmed booking to another free date and time from My bookings (up to twice). The booking ID stays the same and a fresh confirmation is sent.
+- **Profile pages:** customers and partners edit name and email, change mobile number (verified by SMS code), and change password. Changing the password signs out every other device.
+- **Admin control:**
+  - Edit any customer or owner, and any spa's details.
+  - **Deactivate/Reactivate** accounts: deactivated users are signed out and can't log in, and a deactivated owner's spas disappear from the customer site.
+  - Nothing is deleted, so bookings, payments and reviews stay intact for your records.
+- **Appointment reminders** go out ~2 hours before each appointment by SMS and WhatsApp, never twice, and not for bookings made in the last hour.
+
+## Design
+
+"Steam & stone":
+- **Colours:** night aubergine `#1F1B24` with eucalyptus `#2F5D50`, warm oil-amber `#D99A3E` for actions, eucalyptus-mist `#EDF1EC` pages and sandalwood hairlines.
+- **Fonts:** headings in *Marcellus*, text in *Figtree*.
+- **Motion:** the homepage hero is the single orchestrated moment: a jasmine sprig draws itself, the headline clears as if through steam, and steam keeps rising. Elsewhere, motion only responds to the person: tab underlines, slot selection, modals and a confirmation "bloom" after booking.
+- **Accessibility:** "Reduce motion" device settings are respected.
+
+## Tests
+
+`npm test` runs the automated suite: 72 API checks covering portals, security, bookings, commission, closures, walk-in blocks, cancellation windows, rescheduling, profiles, admin controls, reminders and backups. It runs on a temporary copy with a fresh demo database and never touches your real data.
 
 ## Booking IDs, password reset, backups & safe updates
 

@@ -156,7 +156,7 @@ function prettyTime(t) {
 //   MSG91_WHATSAPP_LANG       template language code (default "en")
 //   MSG91_WHATSAPP_NAMESPACE  template namespace, if MSG91 shows one for your template (optional)
 const msg91WhatsappConfigured = !!(process.env.MSG91_AUTH_KEY && process.env.MSG91_WHATSAPP_NUMBER && process.env.MSG91_WHATSAPP_TEMPLATE);
-async function msg91SendWhatsapp(phone, values) {
+async function msg91SendWhatsapp(phone, values, templateName = process.env.MSG91_WHATSAPP_TEMPLATE) {
   const components = {};
   values.forEach((v, i) => { components[`body_${i + 1}`] = { type: 'text', value: String(v) }; });
   try {
@@ -169,7 +169,7 @@ async function msg91SendWhatsapp(phone, values) {
         payload: {
           messaging_product: 'whatsapp', type: 'template',
           template: {
-            name: process.env.MSG91_WHATSAPP_TEMPLATE,
+            name: templateName,
             language: { code: process.env.MSG91_WHATSAPP_LANG || 'en', policy: 'deterministic' },
             namespace: process.env.MSG91_WHATSAPP_NAMESPACE || null,
             to_and_components: [{ to: [toMsg91Mobile(phone)], components }],
@@ -183,6 +183,26 @@ async function msg91SendWhatsapp(phone, values) {
   } catch (e) {
     return { status: 'failed', detail: e.message };
   }
+}
+
+// Appointment reminder (~2 hours before) on SMS + WhatsApp.
+//   MSG91_REMINDER_TEMPLATE_ID         DLT-approved SMS Flow template, variables ##name## ##service## ##spa## ##time## ##ref##
+//   MSG91_WHATSAPP_REMINDER_TEMPLATE   Meta-approved WhatsApp template, 5 body variables: name, service, spa, time, directions link
+async function sendReminder({ booking, customer, spa, service }) {
+  const first = customer.name.split(' ')[0], time = prettyTime(booking.start_time);
+  const directions = spa.latitude != null ? `https://www.google.com/maps/dir/?api=1&destination=${spa.latitude},${spa.longitude}` : (spa.address || spa.city);
+  const text = `Hi ${first}, a reminder: your ${service.name} at ${spa.name} is today at ${time}. Booking ID: ${booking.booking_ref}. Directions: ${directions} — BookMySpa`;
+  const out = {};
+  out.sms = process.env.MSG91_AUTH_KEY && process.env.MSG91_REMINDER_TEMPLATE_ID
+    ? await msg91SendFlow(customer.phone, process.env.MSG91_REMINDER_TEMPLATE_ID, { name: first, service: service.name, spa: spa.name, time, ref: booking.booking_ref || '' })
+    : await sendTwilioMessage(customer.phone, text, { from: process.env.TWILIO_SMS_FROM });
+  out.whatsapp = process.env.MSG91_AUTH_KEY && process.env.MSG91_WHATSAPP_NUMBER && process.env.MSG91_WHATSAPP_REMINDER_TEMPLATE
+    ? await msg91SendWhatsapp(customer.phone, [first, service.name, spa.name, time, directions], process.env.MSG91_WHATSAPP_REMINDER_TEMPLATE)
+    : await sendTwilioMessage(customer.phone, text, { from: process.env.TWILIO_WHATSAPP_FROM, channelPrefix: 'whatsapp:' });
+  for (const [ch, r] of Object.entries(out)) {
+    db.prepare('INSERT INTO notifications (booking_id, channel, recipient, message, status, detail) VALUES (?,?,?,?,?,?)').run(booking.id, ch, customer.phone || '', '[REMINDER] ' + text, r.status, r.detail);
+  }
+  return out;
 }
 
 // Sends the booking confirmation on EVERY channel: SMS + WhatsApp always, email too if configured.
@@ -267,4 +287,4 @@ async function sendOtpSms(phone, code) {
   return result;
 }
 
-module.exports = { sendBookingConfirmation, sendBookingConfirmations, sendOtpSms, isSmsConfigured, toMsg91Mobile, msg91WhatsappConfigured };
+module.exports = { sendReminder, sendBookingConfirmation, sendBookingConfirmations, sendOtpSms, isSmsConfigured, toMsg91Mobile, msg91WhatsappConfigured };

@@ -139,5 +139,6 @@ process.on('unhandledRejection', (err) => console.error('Unhandled rejection (se
       console.log('   Customer: customer@bookmyspa.demo / customer123\n');
     }
     backup.startScheduler(require('./db').db);
+    require('./api').startReminderScheduler();
   });
 })();

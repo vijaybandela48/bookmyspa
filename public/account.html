@@ -34,6 +34,22 @@
     <p class="helper-text" style="margin-top:10px">Your first name and review will be shown publicly as a verified visit.</p>
   </div>
 </div>
+<div class="modal-overlay" id="rescheduleModal">
+  <div class="modal">
+    <h3 style="margin-bottom:2px">Reschedule</h3>
+    <p class="helper-text" id="rsTitle" style="margin:0"></p>
+    <p style="margin:6px 0 4px;font-size:14px" id="rsNow"></p>
+    <label for="rsDate">New date</label>
+    <select id="rsDate" onchange="loadRsSlots()"></select>
+    <label>New time</label>
+    <div class="slot-grid" id="rsSlots"></div>
+    <p class="helper-text">Same service and price. Your booking ID stays the same, and you'll get a new confirmation.</p>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn outline block" onclick="document.getElementById('rescheduleModal').classList.remove('open')">Keep current time</button>
+      <button class="btn gold block" id="rsConfirm" onclick="confirmReschedule()" disabled>Move my booking</button>
+    </div>
+  </div>
+</div>
 <div id="sb-footer"></div>
 
 <script src="/js/api.js"></script>
@@ -55,7 +71,8 @@ async function load() {
     }
     list.innerHTML = bookings.map(b => {
       const d = new Date(b.booking_date + 'T00:00:00');
-      const canCancel = ['pending_payment', 'confirmed'].includes(b.status) && b.booking_date >= localISODate();
+      const canCancel = !!b.can_change;
+      const lockedOut = ['pending_payment', 'confirmed'].includes(b.status) && !b.can_change && b.booking_date >= localISODate();
       return `
       <div class="ticket">
         <div class="stub">
@@ -80,7 +97,12 @@ async function load() {
             ${b.my_rating ? `<span class="stars" style="color:var(--gold)" title="Your rating">${starsHtml(b.my_rating)}</span>` : ''}
             ${b.can_review ? `<button class="btn small gold" onclick="openReview(${b.id}, '${esc(b.spa_name).replace(/'/g, '')}')">⭐ Rate your visit</button>` : ''}
             ${b.status === 'pending_payment' ? `<a class="btn small gold" href="/spa.html?id=${b.spa_id}">Pay now</a>` : ''}
+            ${b.can_reschedule ? `<button class="btn small outline" onclick="openReschedule(${b.id})">Reschedule</button>` : ''}
             ${canCancel ? `<button class="btn small outline" onclick="cancelBooking(${b.id})">Cancel</button>` : ''}
+          </div>
+          <div class="ticket-note">
+            ${b.status === 'confirmed' && canCancel ? `Free cancellation and rescheduling until ${new Date(b.change_deadline).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}
+            ${lockedOut ? `Free cancellation ended ${b.cancel_window_hours} hours before your appointment — call the spa to make changes.` : ''}
           </div>
         </div>
       </div>
@@ -124,6 +146,47 @@ async function submitReview() {
     toast(r.message); closeReview(); load();
   } catch (e) { toast(e.message, 'error'); }
   finally { btn.disabled = false; }
+}
+
+// ---------------- Reschedule ----------------
+let rsBooking = null, rsSlot = null;
+async function openReschedule(id) {
+  const res = await API.get('/bookings/me');
+  rsBooking = res.bookings.find(b => b.id === id); rsSlot = null;
+  if (!rsBooking) return;
+  document.getElementById('rsTitle').textContent = `${rsBooking.service_name} at ${rsBooking.spa_name}`;
+  document.getElementById('rsNow').textContent = `Currently ${formatDate(rsBooking.booking_date)} at ${formatTime(rsBooking.start_time)}`;
+  const sel = document.getElementById('rsDate'); sel.innerHTML = '';
+  for (let i = 0; i < 14; i++) { const d = new Date(); d.setDate(d.getDate() + i); const iso = localISODate(d); sel.add(new Option(formatDate(iso), iso)); }
+  sel.value = rsBooking.booking_date >= localISODate() ? rsBooking.booking_date : localISODate();
+  document.getElementById('rsConfirm').disabled = true;
+  document.getElementById('rescheduleModal').classList.add('open');
+  loadRsSlots();
+}
+async function loadRsSlots() {
+  const grid = document.getElementById('rsSlots'), date = document.getElementById('rsDate').value;
+  rsSlot = null; document.getElementById('rsConfirm').disabled = true;
+  grid.innerHTML = '<p class="helper-text">Loading times…</p>';
+  try {
+    const { slots, closed } = await API.get(`/bookings/${rsBooking.id}/reschedule-slots?date=${date}`);
+    if (closed) { grid.innerHTML = `<p class="helper-text">${esc(closed)}</p>`; return; }
+    const open = slots.filter(s => s.available);
+    grid.innerHTML = open.length ? open.map(s => `<button type="button" class="slot available" data-t="${s.start_time}" onclick="pickRs('${s.start_time}')">${formatTime(s.start_time)}</button>`).join('')
+      : '<p class="helper-text">No free times this day — try another date.</p>';
+  } catch (e) { grid.innerHTML = `<p class="helper-text">${esc(e.message)}</p>`; }
+}
+function pickRs(t) {
+  rsSlot = t;
+  document.querySelectorAll('#rsSlots .slot').forEach(b => b.classList.toggle('selected', b.dataset.t === t));
+  document.getElementById('rsConfirm').disabled = false;
+}
+async function confirmReschedule() {
+  const btn = document.getElementById('rsConfirm'); btn.disabled = true; btn.textContent = 'Moving…';
+  try {
+    const r = await API.put(`/bookings/${rsBooking.id}/reschedule`, { date: document.getElementById('rsDate').value, startTime: rsSlot });
+    toast(r.message); document.getElementById('rescheduleModal').classList.remove('open'); load();
+  } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+  finally { btn.textContent = 'Move my booking'; }
 }
 
 if (AUTH_OK) load();

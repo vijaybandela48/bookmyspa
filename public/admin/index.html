@@ -156,7 +156,8 @@ async function openSpaDetail(id) {
         </div>
         <button class="btn small outline" onclick="closeDetailModal()">Close</button>
       </div>
-      ${statusBadge(s.status)}
+      ${statusBadge(s.status)}${s.suspended ? ' <span class="badge cancelled">Hidden — owner deactivated</span>' : ''}
+      <button class="btn small outline" style="margin-left:8px" onclick="editSpaAdmin(${s.id})">Edit details</button>
       <hr class="divider-line">
       <p style="font-size:14px;color:var(--ink-soft)">${s.description || ''}</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13.5px;margin:14px 0">
@@ -279,7 +280,7 @@ async function loadCustomers() {
     const list = users.filter(u => matches(u, q));
     el.innerHTML = `<p class="helper-text">${users.length} customer${users.length !== 1 ? 's' : ''}${q ? ` · ${list.length} matching` : ''}</p>` + userTable(list, [
       ['ID', u => `<span class="mono helper-text">#${u.id}</span>`],
-      ['Name', u => esc(u.name)],
+      ['Name', u => esc(u.name) + (u.active === 0 ? ' <span class="badge cancelled">Deactivated</span>' : '')],
       ['Contact', u => `${esc(u.email)}<div class="helper-text" style="margin:0">${esc(u.phone || '—')} ${u.phone_verified ? '✅' : ''}</div>`],
       ['Bookings', u => u.booking_count],
       ['Total spent', u => `<span class="mono">${money(u.total_spent)}</span>`],
@@ -296,7 +297,7 @@ async function loadOwners() {
     const list = users.filter(u => matches(u, q, u.spa_names));
     el.innerHTML = `<p class="helper-text">${users.length} spa owner${users.length !== 1 ? 's' : ''}${q ? ` · ${list.length} matching` : ''}</p>` + userTable(list, [
       ['ID', u => `<span class="mono helper-text">#${u.id}</span>`],
-      ['Name', u => esc(u.name)],
+      ['Name', u => esc(u.name) + (u.active === 0 ? ' <span class="badge cancelled">Deactivated</span>' : '')],
       ['Contact', u => `${esc(u.email)}<div class="helper-text" style="margin:0">${esc(u.phone || '—')} ${u.phone_verified ? '✅' : ''}</div>`],
       ['Spas', u => `${u.spa_count} total · ${u.live_spas || 0} live${u.pending_spas ? ` · <span class="badge pending">${u.pending_spas} pending</span>` : ''}<div class="helper-text" style="margin:0">${esc(u.spa_names || '')}</div>`],
       ['Joined', u => formatDate(u.created_at)],
@@ -359,7 +360,10 @@ async function openUserDetail(id) {
         </div>
         <button class="btn small outline" onclick="closeDetailModal()">Close</button>
       </div>
-      <span class="badge approved" style="text-transform:capitalize">${u.role}</span>
+      <span class="badge approved" style="text-transform:capitalize">${u.role}</span>${u.active === 0 ? ' <span class="badge cancelled">Deactivated</span>' : ''}
+      ${u.role !== 'admin' ? `<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn small outline" onclick="editUser(${u.id})">Edit details</button>
+        <button class="btn small ${u.active === 0 ? 'gold' : 'outline'}" onclick="setUserActive(${u.id}, ${u.active === 0})">${u.active === 0 ? 'Reactivate account' : 'Deactivate account'}</button></div>` : ''}
       <div style="font-size:13.5px;color:var(--ink-soft);margin:14px 0">
         <p style="margin:4px 0">✉️ ${u.email}</p>
         <p style="margin:4px 0">📞 ${u.phone || 'Not provided'} ${u.phone_verified ? '<span class="badge confirmed" style="margin-left:4px">Verified</span>' : ''}</p>
@@ -575,6 +579,48 @@ async function downloadBackupFile(name) {
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     toast('Downloaded. Keep it private — it contains customer data.');
   } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Edit / deactivate ----------------
+async function editUser(id) {
+  const { user: u } = await API.get(`/admin/users/${id}`);
+  document.getElementById('detailModalBody').innerHTML = `
+    <h3>Edit ${esc(u.name)}</h3>
+    <label for="au_name">Name</label><input id="au_name" value="${esc(u.name)}">
+    <label for="au_email">Email</label><input id="au_email" value="${esc(u.email)}">
+    <label for="au_phone">Mobile</label><input id="au_phone" value="${esc(u.phone || '')}">
+    <p class="helper-text">Changing the mobile number marks it unverified.</p>
+    <div style="display:flex;gap:10px;margin-top:14px"><button class="btn outline block" onclick="openUserDetail(${id})">Cancel</button><button class="btn gold block" onclick="saveUser(${id})">Save</button></div>`;
+}
+async function saveUser(id) {
+  const g = k => document.getElementById(k).value.trim();
+  try { const r = await API.put(`/admin/users/${id}`, { name: g('au_name'), email: g('au_email'), phone: g('au_phone') }); toast(r.message); openUserDetail(id); refreshUserLists(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function setUserActive(id, active) {
+  if (!active && !confirm('Deactivate this account? They will be signed out and can’t log in. For spa owners, their spas are hidden from customers. Bookings and history are kept, and you can reactivate any time.')) return;
+  try { const r = await API.put(`/admin/users/${id}`, { active }); toast(r.message); openUserDetail(id); refreshUserLists(); loadStats(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+function refreshUserLists() {
+  if (document.getElementById('tab-customers').style.display !== 'none') loadCustomers();
+  if (document.getElementById('tab-owners').style.display !== 'none') loadOwners();
+}
+async function editSpaAdmin(id) {
+  const { spa: s } = await API.get(`/admin/spas/${id}`);
+  document.getElementById('detailModalBody').innerHTML = `
+    <h3>Edit ${esc(s.name)}</h3>
+    <label for="as_name">Name</label><input id="as_name" value="${esc(s.name)}">
+    <label for="as_desc">Description</label><textarea id="as_desc" rows="3">${esc(s.description || '')}</textarea>
+    <div class="form-row"><div><label for="as_city">City</label><input id="as_city" value="${esc(s.city)}"></div><div><label for="as_phone">Phone</label><input id="as_phone" value="${esc(s.phone || '')}"></div></div>
+    <label for="as_addr">Address</label><input id="as_addr" value="${esc(s.address || '')}">
+    <div class="form-row"><div><label for="as_open">Opens</label><input type="time" id="as_open" value="${s.opening_time}"></div><div><label for="as_close">Closes</label><input type="time" id="as_close" value="${s.closing_time}"></div></div>
+    <div style="display:flex;gap:10px;margin-top:14px"><button class="btn outline block" onclick="openSpaDetail(${id})">Cancel</button><button class="btn gold block" onclick="saveSpaAdmin(${id})">Save</button></div>`;
+}
+async function saveSpaAdmin(id) {
+  const g = k => document.getElementById(k).value.trim();
+  try { const r = await API.put(`/admin/spas/${id}`, { name: g('as_name'), description: g('as_desc'), city: g('as_city'), phone: g('as_phone'), address: g('as_addr'), opening_time: g('as_open'), closing_time: g('as_close') });
+    toast(r.message); openSpaDetail(id); loadSpas(); } catch (e) { toast(e.message, 'error'); }
 }
 
 const messageStatusLabel = { new: 'New', read: 'Read', resolved: 'Resolved' };

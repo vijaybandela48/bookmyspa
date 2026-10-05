@@ -19,6 +19,7 @@
   <div class="tabs" style="margin-top:24px">
     <div class="tab active" data-tab="spas" onclick="switchTab('spas')">My spas</div>
     <div class="tab" data-tab="bookings" onclick="switchTab('bookings')">Bookings</div>
+    <div class="tab" data-tab="calendar" onclick="switchTab('calendar')">📅 Calendar</div>
     <div class="tab" data-tab="earnings" onclick="switchTab('earnings')">💰 Earnings</div>
     <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">⭐ Reviews</div>
   </div>
@@ -166,6 +167,31 @@
     <div id="ownerBookings"><p>Loading…</p></div>
   </div>
 
+  <div id="tab-calendar" style="display:none">
+    <div class="cal-toolbar">
+      <select id="calSpa" onchange="loadCalendar()" aria-label="Spa"></select>
+      <div class="cal-nav">
+        <button class="btn small outline" onclick="shiftCalDay(-1)" aria-label="Previous day">‹</button>
+        <input type="date" id="calDate" onchange="loadCalendar()" aria-label="Date">
+        <button class="btn small outline" onclick="shiftCalDay(1)" aria-label="Next day">›</button>
+        <button class="btn small outline" onclick="document.getElementById('calDate').value = localISODate(); loadCalendar()">Today</button>
+      </div>
+    </div>
+    <div id="calBody"><p>Loading…</p></div>
+    <div class="panel" style="margin-top:18px">
+      <h3>Block time for walk-ins</h3>
+      <p class="helper-text">Blocked time can't be booked online. Use it for walk-in customers, staff breaks or maintenance.</p>
+      <div class="form-row">
+        <div><label for="blkRoom">What to block</label><select id="blkRoom"></select></div>
+        <div id="blkQtyWrap"><label for="blkQty">Rooms</label><input type="number" id="blkQty" min="1" value="1"></div>
+        <div><label for="blkStart">From</label><input type="time" id="blkStart" value="11:00"></div>
+        <div><label for="blkEnd">To</label><input type="time" id="blkEnd" value="12:00"></div>
+        <div><label for="blkReason">Reason</label><input id="blkReason" value="Walk-in" maxlength="80"></div>
+      </div>
+      <button class="btn gold" style="margin-top:14px" onclick="addBlock()">Block time</button>
+    </div>
+  </div>
+
   <div id="tab-earnings" style="display:none">
     <div id="earnings"><p>Loading…</p></div>
   </div>
@@ -203,6 +229,56 @@
   </div>
 </div>
 
+<!-- Edit spa details -->
+<div class="modal-overlay" id="editSpaModal">
+  <div class="modal" style="max-width:620px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Edit spa details</h3><button class="btn small outline" onclick="closeModal('editSpaModal')">Close</button></div>
+    <label for="es_name">Spa name</label><input id="es_name" maxlength="80">
+    <label for="es_desc">Description</label><textarea id="es_desc" rows="3" maxlength="600"></textarea>
+    <div class="form-row">
+      <div><label for="es_city">City</label><input id="es_city"></div>
+      <div><label for="es_phone">Phone</label><input id="es_phone" type="tel"></div>
+    </div>
+    <label for="es_address">Address</label><input id="es_address">
+    <div class="form-row">
+      <div><label for="es_open">Opens</label><input type="time" id="es_open"></div>
+      <div><label for="es_close">Closes</label><input type="time" id="es_close"></div>
+      <div><label for="es_cancel">Free cancellation until</label><select id="es_cancel">
+        <option value="0">Any time before</option><option value="2">2 hours before</option><option value="4">4 hours before</option>
+        <option value="12">12 hours before</option><option value="24">24 hours before</option><option value="48">48 hours before</option></select></div>
+    </div>
+    <label>Weekly day off</label>
+    <div class="day-picks" id="es_off"></div>
+    <hr class="divider-line">
+    <h4 style="margin-bottom:4px">Holidays &amp; closed dates</h4>
+    <p class="helper-text">Customers can't book these days. Existing bookings are kept — contact those customers.</p>
+    <div class="form-row">
+      <div><label for="es_cdate">Date</label><input type="date" id="es_cdate"></div>
+      <div style="flex:2"><label for="es_creason">Reason (shown to customers)</label><input id="es_creason" placeholder="e.g. Diwali" maxlength="120"></div>
+    </div>
+    <button class="btn small outline" style="margin-top:10px" onclick="addClosure()">Add closed date</button>
+    <div id="es_closures" style="margin-top:10px"></div>
+    <button class="btn gold block" style="margin-top:18px" onclick="saveSpaEdits()">Save changes</button>
+  </div>
+</div>
+
+<!-- Edit service -->
+<div class="modal-overlay" id="editSvcModal">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Edit service</h3><button class="btn small outline" onclick="closeModal('editSvcModal')">Close</button></div>
+    <label for="sv_e_name">Name</label><input id="sv_e_name" maxlength="80">
+    <label for="sv_e_desc">Description</label><input id="sv_e_desc" maxlength="300">
+    <div class="form-row">
+      <div><label for="sv_e_dur">Duration (minutes)</label><input type="number" id="sv_e_dur" min="15" max="480" step="15"></div>
+      <div><label for="sv_e_price">Price (₹)</label><input type="number" id="sv_e_price" min="1"></div>
+      <div><label for="sv_e_disc">Discount %</label><input type="number" id="sv_e_disc" min="0" max="90"></div>
+    </div>
+    <label for="sv_e_room">Room type</label><select id="sv_e_room"></select>
+    <p class="helper-text">Price changes apply to new bookings only — existing bookings keep the price the customer saw.</p>
+    <button class="btn gold block" style="margin-top:14px" onclick="saveServiceEdits()">Save service</button>
+  </div>
+</div>
+
 <script src="/js/api.js"></script>
 <script>
 renderNav('dashboard');
@@ -217,6 +293,8 @@ function switchTab(name) {
   document.getElementById('tab-bookings').style.display = name === 'bookings' ? 'block' : 'none';
   document.getElementById('tab-earnings').style.display = name === 'earnings' ? 'block' : 'none';
   document.getElementById('tab-reviews').style.display = name === 'reviews' ? 'block' : 'none';
+  document.getElementById('tab-calendar').style.display = name === 'calendar' ? 'block' : 'none';
+  if (name === 'calendar') initCalendar();
   if (name === 'reviews') loadOwnerReviews();
   if (name === 'bookings') loadOwnerBookings();
   if (name === 'earnings') loadEarnings();
@@ -259,6 +337,7 @@ async function loadSpas() {
           <button class="btn small outline" onclick="openCouponManager(${s.id})">🏷️ Coupons</button>
           <button class="btn small outline" onclick="openMediaManager(${s.id})">📷 Photos &amp; videos</button>
           <button class="btn small outline" onclick="editSpaLocation(${s.id}, ${s.latitude || 'null'}, ${s.longitude || 'null'})">📍 ${s.latitude ? 'Update' : 'Set'} location</button>
+          <button class="btn small outline" onclick="openEditSpa(${s.id})">✏️ Edit details &amp; hours</button>
         </div>
       </div>
     `).join('');
@@ -626,6 +705,7 @@ async function loadServices() {
   el.innerHTML = '<p class="helper-text">Loading…</p>';
   try {
     const { services } = await API.get(`/owner/spas/${activeSpaId}/services`);
+    window._svcCache = Object.fromEntries(services.map(x => [x.id, x]));
     if (!services.length) {
       el.innerHTML = `<p class="helper-text">No services yet — add one below.</p>`;
       return;
@@ -642,6 +722,7 @@ async function loadServices() {
             ? `<div style="font-size:12px;color:var(--ink-soft);text-decoration:line-through">${money(sv.price)}</div><div class="price">${money(sv.final_price)}</div>`
             : `<div class="price">${money(sv.price)}</div>`}
           ${sv.active ? `
+            <button class="btn small outline" style="margin-top:8px" onclick="openEditService(${sv.id})">Edit</button>
             <button class="btn small outline" style="margin-top:8px" onclick="editDiscount(${sv.id}, ${sv.discount_percent})">${sv.discount_percent > 0 ? 'Edit discount' : 'Add discount'}</button>
             <button class="btn small outline" style="margin-top:8px" onclick="removeService(${sv.id})">Remove</button>
           ` : ''}
@@ -953,6 +1034,154 @@ async function replyReview(id) {
   if (reply === null) return;
   try { const r = await API.put(`/owner/reviews/${id}/reply`, { reply }); toast(r.message); loadOwnerReviews(); }
   catch (e) { toast(e.message, 'error'); }
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// ---------------- Edit spa details & hours ----------------
+let editSpaId = null;
+async function openEditSpa(id) {
+  editSpaId = id;
+  const s = mySpas.find(x => x.id === id);
+  const v = (k, val) => { document.getElementById(k).value = val ?? ''; };
+  v('es_name', s.name); v('es_desc', s.description); v('es_city', s.city); v('es_phone', s.phone); v('es_address', s.address);
+  v('es_open', s.opening_time); v('es_close', s.closing_time);
+  const sel = document.getElementById('es_cancel'); sel.value = String(s.cancel_window_hours ?? 4);
+  if (sel.value !== String(s.cancel_window_hours ?? 4)) { sel.add(new Option(`${s.cancel_window_hours} hours before`, s.cancel_window_hours)); sel.value = String(s.cancel_window_hours); }
+  const off = String(s.weekly_off || '').split(',').filter(Boolean);
+  document.getElementById('es_off').innerHTML = DAY_NAMES.map((d, i) => `<label class="day-pick"><input type="checkbox" value="${i}" ${off.includes(String(i)) ? 'checked' : ''}><span>${d}</span></label>`).join('');
+  document.getElementById('es_cdate').value = ''; document.getElementById('es_creason').value = '';
+  document.getElementById('editSpaModal').classList.add('open');
+  loadClosures();
+}
+async function loadClosures() {
+  const el = document.getElementById('es_closures');
+  try {
+    const { closures } = await API.get(`/owner/spas/${editSpaId}/closures`);
+    el.innerHTML = closures.length ? closures.map(c => `<div class="chip-row"><span><strong>${formatDate(c.date)}</strong>${c.reason ? ' — ' + esc(c.reason) : ''}</span><button class="btn small outline" onclick="removeClosure(${c.id})">Reopen</button></div>`).join('')
+      : '<p class="helper-text" style="margin:0">No upcoming closed dates.</p>';
+  } catch (e) { el.innerHTML = `<p class="helper-text">${esc(e.message)}</p>`; }
+}
+async function addClosure() {
+  const date = document.getElementById('es_cdate').value;
+  if (!date) return toast('Pick a date to close.', 'error');
+  try { const r = await API.post(`/owner/spas/${editSpaId}/closures`, { date, reason: document.getElementById('es_creason').value.trim() }); toast(r.message); document.getElementById('es_cdate').value = ''; document.getElementById('es_creason').value = ''; loadClosures(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function removeClosure(id) {
+  try { const r = await API.del(`/owner/closures/${id}`); toast(r.message); loadClosures(); } catch (e) { toast(e.message, 'error'); }
+}
+async function saveSpaEdits() {
+  const g = id => document.getElementById(id).value.trim();
+  const off = [...document.querySelectorAll('#es_off input:checked')].map(c => c.value).join(',');
+  try {
+    await API.put(`/owner/spas/${editSpaId}`, { name: g('es_name'), description: g('es_desc'), city: g('es_city'), phone: g('es_phone'), address: g('es_address'),
+      opening_time: g('es_open'), closing_time: g('es_close'), cancel_window_hours: Number(g('es_cancel')), weekly_off: off });
+    toast('Spa details saved.'); closeModal('editSpaModal'); loadSpas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Edit service ----------------
+let editSvcId = null;
+async function openEditService(id) {
+  editSvcId = id;
+  const sv = (window._svcCache || {})[id];
+  if (!sv) return;
+  const v = (k, val) => { document.getElementById(k).value = val ?? ''; };
+  v('sv_e_name', sv.name); v('sv_e_desc', sv.description); v('sv_e_dur', sv.duration_minutes); v('sv_e_price', sv.price); v('sv_e_disc', sv.discount_percent || 0);
+  const sel = document.getElementById('sv_e_room');
+  sel.innerHTML = '<option value="">No room limit (one booking at a time)</option>';
+  try { const { roomTypes } = await API.get(`/owner/spas/${activeSpaId}/room-types`); roomTypes.forEach(rt => sel.add(new Option(`${rt.name} (${rt.capacity})`, rt.id))); } catch {}
+  sel.value = sv.room_type_id || '';
+  document.getElementById('editSvcModal').classList.add('open');
+}
+async function saveServiceEdits() {
+  const g = id => document.getElementById(id).value.trim();
+  try {
+    await API.put(`/owner/services/${editSvcId}`, { name: g('sv_e_name'), description: g('sv_e_desc'), duration_minutes: Number(g('sv_e_dur')), price: Number(g('sv_e_price')),
+      discount_percent: Number(g('sv_e_disc') || 0), room_type_id: g('sv_e_room') });
+    toast('Service saved.'); closeModal('editSvcModal'); loadServices();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Calendar & walk-ins ----------------
+let calData = null;
+function initCalendar() {
+  const sel = document.getElementById('calSpa');
+  if (!sel.options.length) mySpas.forEach(s => sel.add(new Option(s.name, s.id)));
+  if (!document.getElementById('calDate').value) document.getElementById('calDate').value = localISODate();
+  loadCalendar();
+}
+function shiftCalDay(n) {
+  const d = new Date(document.getElementById('calDate').value + 'T00:00:00'); d.setDate(d.getDate() + n);
+  document.getElementById('calDate').value = localISODate(d); loadCalendar();
+}
+const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+function layoutLanes(items) { // assigns each item a lane so overlapping items sit side by side
+  const lanes = [];
+  for (const it of items.sort((a, b) => toMin(a.start_time) - toMin(b.start_time))) {
+    let l = lanes.findIndex(end => end <= toMin(it.start_time));
+    if (l === -1) { lanes.push(0); l = lanes.length - 1; }
+    lanes[l] = toMin(it.end_time); it._lane = l;
+  }
+  return Math.max(1, lanes.length);
+}
+async function loadCalendar() {
+  const el = document.getElementById('calBody');
+  const spaId = document.getElementById('calSpa').value, date = document.getElementById('calDate').value;
+  if (!spaId) { el.innerHTML = '<p class="helper-text">Add a spa first.</p>'; return; }
+  try {
+    calData = await API.get(`/owner/spas/${spaId}/calendar?date=${date}`);
+    const { spa, roomTypes, bookings, blocks, closed } = calData;
+    const sel = document.getElementById('blkRoom');
+    sel.innerHTML = '<option value="">Whole spa (all rooms)</option>' + roomTypes.map(rt => `<option value="${rt.id}">${esc(rt.name)} — ${rt.capacity} room${rt.capacity !== 1 ? 's' : ''}</option>`).join('');
+    sel.onchange = () => { document.getElementById('blkQtyWrap').style.visibility = sel.value ? 'visible' : 'hidden'; }; sel.onchange();
+    const open = toMin(spa.opening_time), close = toMin(spa.closing_time), PPM = 1.3;
+    const cols = [...roomTypes.map(rt => ({ id: rt.id, name: rt.name, sub: `${rt.capacity} room${rt.capacity !== 1 ? 's' : ''}`, cap: rt.capacity }))];
+    if (bookings.some(b => !b.room_type_id)) cols.push({ id: null, name: 'Other services', sub: 'one at a time', cap: 1 });
+    const hours = []; for (let m = Math.ceil(open / 60) * 60; m < close; m += 60) hours.push(m);
+    const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
+    const statusClass = b => b.status === 'completed' ? 'done' : b.payment_mode === 'pay_at_venue' && b.payment_status !== 'paid' ? 'due' : 'paid';
+    const colHtml = cols.map(c => {
+      const items = [...bookings.filter(b => (b.room_type_id || null) === c.id).map(b => ({ ...b, _kind: 'booking' })),
+                     ...blocks.filter(bl => c.id !== null && bl.room_type_id === c.id).map(bl => ({ ...bl, _kind: 'block' }))];
+      const lanes = Math.max(c.cap, layoutLanes(items));
+      return `<div class="cal-col"><div class="cal-col-head"><strong>${esc(c.name)}</strong><span>${c.sub}</span></div>
+        <div class="cal-col-body" style="height:${(close - open) * PPM}px">
+          ${hours.map(m => `<div class="cal-hline" style="top:${(m - open) * PPM}px"></div>`).join('')}
+          ${items.map(it => {
+            const top = (toMin(it.start_time) - open) * PPM, h = Math.max(22, (toMin(it.end_time) - toMin(it.start_time)) * PPM - 3);
+            const style = `top:${top}px;height:${h}px;left:calc(${(it._lane / lanes) * 100}% + 3px);width:calc(${100 / lanes}% - 6px)`;
+            return it._kind === 'block'
+              ? `<div class="cal-item block" style="${style}" title="${esc(it.reason || 'Blocked')}"><span>${formatTime(it.start_time)}–${formatTime(it.end_time)} · ${it.qty} room${it.qty !== 1 ? 's' : ''}</span><strong>${esc(it.reason || 'Blocked')}</strong><button class="cal-x" onclick="removeBlock(${it.id})" aria-label="Remove block">×</button></div>`
+              : `<div class="cal-item ${statusClass(it)}" style="${style}" title="${esc(it.booking_ref || '')}"><span>${formatTime(it.start_time)} · ${esc(it.booking_ref || '')}</span><strong>${esc(it.customer_name)}</strong><em>${esc(it.service_name)}</em></div>`;
+          }).join('')}
+        </div></div>`;
+    }).join('');
+    const wholeBlocks = blocks.filter(bl => bl.room_type_id === null);
+    el.innerHTML = `
+      ${closed ? `<div class="panel" style="background:#F3DEDD;border-color:#B5485D;margin-bottom:14px"><strong>${esc(closed)}</strong> — no online bookings this day.</div>` : ''}
+      <div class="cal-legend"><span class="lg paid"></span>Paid / confirmed <span class="lg due"></span>Pay at spa <span class="lg done"></span>Completed <span class="lg block"></span>Blocked</div>
+      <div class="cal-wrap">
+        <div class="cal-times" style="height:${(close - open) * PPM}px">${hours.map(m => `<span style="top:${(m - open) * PPM}px">${formatTime(String(Math.floor(m / 60)).padStart(2, '0') + ':00')}</span>`).join('')}</div>
+        <div class="cal-cols">${colHtml || '<p class="helper-text" style="padding:20px">Add room types to see your rooms here.</p>'}
+          ${wholeBlocks.map(bl => `<div class="cal-whole" style="top:${(toMin(bl.start_time) - open) * PPM + 52}px;height:${(toMin(bl.end_time) - toMin(bl.start_time)) * PPM}px"><span>${esc(bl.reason || 'Whole spa blocked')} · ${formatTime(bl.start_time)}–${formatTime(bl.end_time)}</span><button class="cal-x" onclick="removeBlock(${bl.id})" aria-label="Remove block">×</button></div>`).join('')}
+          ${date === localISODate() && nowMin > open && nowMin < close ? `<div class="cal-now" style="top:${(nowMin - open) * PPM + 52}px"></div>` : ''}
+        </div>
+      </div>
+      <p class="helper-text" style="margin-top:10px">${bookings.length} booking${bookings.length !== 1 ? 's' : ''} on ${formatDate(date)}.</p>`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function addBlock() {
+  const spaId = document.getElementById('calSpa').value, room = document.getElementById('blkRoom').value;
+  const body = { date: document.getElementById('calDate').value, start_time: document.getElementById('blkStart').value, end_time: document.getElementById('blkEnd').value,
+    reason: document.getElementById('blkReason').value.trim() || 'Walk-in' };
+  if (room) { body.room_type_id = Number(room); body.qty = Number(document.getElementById('blkQty').value || 1); }
+  try { const r = await API.post(`/owner/spas/${spaId}/blocks`, body); toast(r.message); loadCalendar(); } catch (e) { toast(e.message, 'error'); }
+}
+async function removeBlock(id) {
+  try { const r = await API.del(`/owner/blocks/${id}`); toast(r.message); loadCalendar(); } catch (e) { toast(e.message, 'error'); }
 }
 
 if (AUTH_OK) loadSpas();

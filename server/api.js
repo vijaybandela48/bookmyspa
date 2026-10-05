@@ -137,6 +137,7 @@ function publicSpa(s) {
     cover_image_url: cover ? cover.url : null,
     latitude: s.latitude, longitude: s.longitude,
     allow_pay_at_venue: s.allow_pay_at_venue !== 0,
+    weekly_off: s.weekly_off || '', cancel_window_hours: s.cancel_window_hours ?? 4,
     ...featuredInfo(s.id),
     owner_id: s.owner_id,
   };
@@ -298,8 +299,26 @@ function parseCoords(text) {
 }
 const MAP_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|maps\.google\.[a-z.]+|(www\.)?google\.[a-z.]+)$/i;
 
-function getAvailableSlots(spa, service, date) {
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function closureReason(spa, date) {
+  const off = String(spa.weekly_off || '').split(',').filter((x) => x !== '').map(Number);
+  const dow = new Date(date + 'T00:00:00Z').getUTCDay();
+  if (off.includes(dow)) return `Closed every ${WEEKDAYS[dow]}`;
+  const c = db.prepare('SELECT reason FROM spa_closures WHERE spa_id = ? AND date = ?').get(spa.id, date);
+  if (c) return c.reason ? `Closed — ${c.reason}` : 'Closed on this day';
+  return null;
+}
+// Appointment start as a real timestamp (business timezone), and the free-cancellation deadline.
+function appointmentMs(b) { return Date.parse(`${b.booking_date}T${b.start_time}:00Z`) - TZ_OFFSET_MINUTES * 60000; }
+function changeDeadlineMs(b, spa) { return appointmentMs(b) - (spa.cancel_window_hours ?? 4) * 3600000; }
+function withinChangeWindow(b, spa) { return b.status === 'pending_payment' || Date.now() <= changeDeadlineMs(b, spa); }
+
+function getAvailableSlots(spa, service, date, opts = {}) {
   cleanupStaleBookings();
+  if (closureReason(spa, date)) return [];
+  const excludeId = opts.excludeBookingId || -1;
+  const blocks = db.prepare('SELECT room_type_id, start_time, end_time, qty FROM slot_blocks WHERE spa_id = ? AND date = ?').all(spa.id, date)
+    .filter((bl) => bl.room_type_id === null || (service.room_type_id && bl.room_type_id === service.room_type_id));
   const openMin = timeToMinutes(spa.opening_time);
   const closeMin = timeToMinutes(spa.closing_time);
   const duration = service.duration_minutes;
@@ -315,13 +334,13 @@ function getAvailableSlots(spa, service, date) {
     relevantBookings = db.prepare(
       `SELECT b.start_time, b.end_time FROM bookings b
        JOIN services sv ON sv.id = b.service_id
-       WHERE b.spa_id = ? AND b.booking_date = ? AND sv.room_type_id = ? AND b.status IN ('pending_payment','confirmed')`
-    ).all(spa.id, date, service.room_type_id);
+       WHERE b.spa_id = ? AND b.booking_date = ? AND sv.room_type_id = ? AND b.status IN ('pending_payment','confirmed') AND b.id != ?`
+    ).all(spa.id, date, service.room_type_id, excludeId);
   } else {
     relevantBookings = db.prepare(
       `SELECT start_time, end_time FROM bookings
-       WHERE spa_id = ? AND booking_date = ? AND service_id = ? AND status IN ('pending_payment','confirmed')`
-    ).all(spa.id, date, service.id);
+       WHERE spa_id = ? AND booking_date = ? AND service_id = ? AND status IN ('pending_payment','confirmed') AND id != ?`
+    ).all(spa.id, date, service.id, excludeId);
   }
 
   const slots = [];
@@ -338,8 +357,14 @@ function getAvailableSlots(spa, service, date) {
       const bEnd = timeToMinutes(b.end_time);
       return start < bEnd && end > bStart;
     }).length;
+    let blocked = 0, wholeSpa = false;
+    for (const bl of blocks) {
+      if (start < timeToMinutes(bl.end_time) && end > timeToMinutes(bl.start_time)) {
+        if (bl.room_type_id === null) wholeSpa = true; else blocked += bl.qty;
+      }
+    }
 
-    const spotsLeft = Math.max(0, capacity - overlapCount);
+    const spotsLeft = wholeSpa ? 0 : Math.max(0, capacity - overlapCount - blocked);
     slots.push({ start_time: minutesToTime(start), end_time: minutesToTime(end), available: spotsLeft > 0, spots_left: spotsLeft, capacity });
   }
   return slots;
@@ -480,6 +505,7 @@ async function handleApi(req, res, pathname, query) {
       const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
       if (!u) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
       if (u.role === 'admin') return sendJSON(res, 403, { error: 'Admin passwords can only be reset from the server (see README).' });
+      if (u.active === 0) return sendJSON(res, 403, { error: 'This account has been deactivated. Please contact support.' });
       const portalErr = checkPortal(u, body.portal);
       if (portalErr) return sendJSON(res, 403, { error: portalErr });
       const otpResult = verifyOtp(phone, body.code, 'login');
@@ -618,6 +644,7 @@ async function handleApi(req, res, pathname, query) {
       if (!u || !verifyPassword(password, u.password_salt, u.password_hash)) {
         return sendJSON(res, 401, { error: 'Invalid email or password.' });
       }
+      if (u.active === 0) return sendJSON(res, 403, { error: 'This account has been deactivated. Please contact support.' });
       const portalErr = checkPortal(u, body.portal);
       if (portalErr) return sendJSON(res, 403, { error: portalErr });
       const token = sign({ id: u.id, role: u.role, name: u.name });
@@ -640,6 +667,7 @@ async function handleApi(req, res, pathname, query) {
       const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
       if (!u) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
       if (u.role === 'admin') return sendJSON(res, 403, { error: 'Admins must log in with a password.' });
+      if (u.active === 0) return sendJSON(res, 403, { error: 'This account has been deactivated. Please contact support.' });
       const otpPortalErr = checkPortal(u, body.portal);
       if (otpPortalErr) return sendJSON(res, 403, { error: otpPortalErr });
 
@@ -662,7 +690,7 @@ async function handleApi(req, res, pathname, query) {
       const lat = query.get('lat') ? Number(query.get('lat')) : null;
       const lng = query.get('lng') ? Number(query.get('lng')) : null;
 
-      let sql = "SELECT * FROM spas WHERE status = 'approved'";
+      let sql = "SELECT * FROM spas WHERE status = 'approved' AND suspended = 0";
       const args = [];
       if (city) { sql += ' AND city LIKE ?'; args.push(`%${city}%`); }
       if (search) { sql += ' AND (name LIKE ? OR description LIKE ?)'; args.push(`%${search}%`, `%${search}%`); }
@@ -703,12 +731,12 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'spas' && parts[2] === 'cities' && req.method === 'GET') {
-      const rows = db.prepare("SELECT DISTINCT city FROM spas WHERE status='approved' ORDER BY city").all();
+      const rows = db.prepare("SELECT DISTINCT city FROM spas WHERE status='approved' AND suspended = 0 ORDER BY city").all();
       return sendJSON(res, 200, { cities: rows.map((r) => r.city) });
     }
 
     if (parts[1] === 'spas' && parts.length === 3 && req.method === 'GET') {
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const services = db.prepare(
         `SELECT sv.*, rt.name as room_type_name, rt.capacity as room_type_capacity
@@ -720,7 +748,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'spas' && parts[3] === 'slots' && req.method === 'GET') {
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const serviceId = query.get('serviceId');
       const date = query.get('date');
@@ -730,11 +758,11 @@ async function handleApi(req, res, pathname, query) {
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spa.id);
       if (!service) return sendJSON(res, 404, { error: 'Service not found for this spa.' });
       const slots = getAvailableSlots(spa, service, date);
-      return sendJSON(res, 200, { slots });
+      return sendJSON(res, 200, { slots, closed: closureReason(spa, date) });
     }
 
     if (parts[1] === 'spas' && parts[3] === 'coupons' && parts[4] === 'validate' && req.method === 'GET') {
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const code = query.get('code');
       const serviceId = query.get('serviceId');
@@ -786,7 +814,7 @@ async function handleApi(req, res, pathname, query) {
       if (paymentMode === 'online' && !onlinePaymentsAvailable()) {
         return sendJSON(res, 400, { error: "Online payment isn't available yet — please choose Pay at the spa." });
       }
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(spaId);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(spaId);
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spaId);
       if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
       if (paymentMode === 'pay_at_venue' && spa.allow_pay_at_venue === 0) {
@@ -861,7 +889,15 @@ async function handleApi(req, res, pathname, query) {
          WHERE b.customer_id = ?
          ORDER BY b.booking_date DESC, b.start_time DESC`
       ).all(user.id);
-      for (const b of rows) b.can_review = !b.my_rating && reviewEligible(b);
+      const winStmt = db.prepare('SELECT cancel_window_hours FROM spas WHERE id = ?');
+      for (const b of rows) {
+        b.can_review = !b.my_rating && reviewEligible(b);
+        const sp = winStmt.get(b.spa_id) || { cancel_window_hours: 4 };
+        b.cancel_window_hours = sp.cancel_window_hours;
+        b.change_deadline = new Date(changeDeadlineMs(b, sp)).toISOString();
+        b.can_change = ['pending_payment', 'confirmed'].includes(b.status) && !b.settlement_id && b.booking_date >= localNow().date && withinChangeWindow(b, sp);
+        b.can_reschedule = b.status === 'confirmed' && b.can_change && (b.rescheduled_count || 0) < 2;
+      }
       return sendJSON(res, 200, { bookings: rows });
     }
 
@@ -934,6 +970,73 @@ async function handleApi(req, res, pathname, query) {
       });
     }
 
+    // ---------------- CUSTOMER: RESCHEDULE ----------------
+    if (parts[1] === 'bookings' && (parts[3] === 'reschedule-slots' || parts[3] === 'reschedule') && ['GET', 'PUT'].includes(req.method)) {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
+      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
+      const service = db.prepare('SELECT * FROM services WHERE id = ?').get(booking.service_id);
+      if (booking.status !== 'confirmed' || booking.settlement_id) return sendJSON(res, 409, { error: 'Only confirmed upcoming bookings can be rescheduled.' });
+      if (!withinChangeWindow(booking, spa)) return sendJSON(res, 409, { error: `Rescheduling closed ${spa.cancel_window_hours} hours before your appointment. Please call the spa.` });
+      if ((booking.rescheduled_count || 0) >= 2) return sendJSON(res, 409, { error: 'This booking has already been rescheduled twice. Please call the spa.' });
+      const body = req.method === 'PUT' ? await parseBody(req) : {};
+      const date = req.method === 'GET' ? query.get('date') : body.date;
+      const dateErr = validateBookingDate(date);
+      if (dateErr) return sendJSON(res, 400, { error: dateErr });
+      const slots = getAvailableSlots(spa, service, date, { excludeBookingId: booking.id });
+      if (req.method === 'GET') return sendJSON(res, 200, { slots, closed: closureReason(spa, date) });
+      const chosen = slots.find((x) => x.start_time === body.startTime);
+      if (!chosen || !chosen.available) return sendJSON(res, 409, { error: 'That time is no longer available. Please pick another.' });
+      if (date === booking.booking_date && chosen.start_time === booking.start_time) return sendJSON(res, 400, { error: 'That is already your booking time.' });
+      db.prepare('UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, rescheduled_count = rescheduled_count + 1, reminder_sent = 0 WHERE id = ?')
+        .run(date, chosen.start_time, chosen.end_time, booking.id);
+      const updated = db.prepare('SELECT * FROM bookings WHERE id = ?').get(booking.id);
+      try { await notifier.sendBookingConfirmations({ booking: updated, customer: db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), spa, service }); } catch { /* non-fatal */ }
+      return sendJSON(res, 200, { message: 'Booking rescheduled. A new confirmation is on its way.', booking: updated });
+    }
+
+    // ---------------- PROFILE (customers & partners) ----------------
+    if (parts[1] === 'me' && parts.length === 2 && req.method === 'PUT') {
+      const user = requireAuth(req, res);
+      if (!user) return;
+      const body = await parseBody(req);
+      const u = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      const name = body.name !== undefined ? String(body.name).trim() : u.name;
+      const email = body.email !== undefined ? String(body.email).trim().toLowerCase() : u.email;
+      if (name.length < 2 || name.length > 80) return sendJSON(res, 400, { error: 'Please enter your full name.' });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJSON(res, 400, { error: 'Enter a valid email address.' });
+      if (db.prepare('SELECT id FROM users WHERE lower(email) = ? AND id != ?').get(email, u.id)) return sendJSON(res, 409, { error: 'Another account already uses this email.' });
+      db.prepare('UPDATE users SET name = ?, email = ? WHERE id = ?').run(name, email, u.id);
+      const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+      return sendJSON(res, 200, { message: 'Profile saved.', user: publicUser(fresh), token: sign({ id: fresh.id, role: fresh.role, name: fresh.name }) });
+    }
+    if (parts[1] === 'me' && parts[2] === 'password' && req.method === 'PUT') {
+      const user = requireAuth(req, res);
+      if (!user) return;
+      if (!checkRateLimit(req, { keyPrefix: 'pw_change', maxRequests: 10, windowMs: 15 * 60 * 1000 })) return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes.' });
+      const body = await parseBody(req);
+      const u = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      if (!verifyPassword(String(body.currentPassword || ''), u.password_salt, u.password_hash)) return sendJSON(res, 400, { error: 'Your current password is incorrect.' });
+      if (typeof body.newPassword !== 'string' || body.newPassword.length < 8 || body.newPassword.length > 200) return sendJSON(res, 400, { error: 'New password must be at least 8 characters.' });
+      const { hash, salt } = hashPassword(body.newPassword);
+      db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, password_changed_at = datetime('now') WHERE id = ?").run(hash, salt, u.id);
+      return sendJSON(res, 200, { message: 'Password changed. Other devices have been signed out.', token: sign({ id: u.id, role: u.role, name: u.name }), user: publicUser(u) });
+    }
+    if (parts[1] === 'me' && parts[2] === 'phone' && req.method === 'PUT') {
+      const user = requireAuth(req, res);
+      if (!user) return;
+      const body = await parseBody(req);
+      const phone = normalizePhone(body.phone);
+      if (!phone || phone.length < 10) return sendJSON(res, 400, { error: 'Enter a valid mobile number.' });
+      if (db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(phone, user.id)) return sendJSON(res, 409, { error: 'Another account already uses this number.' });
+      const verified = otpAvailable();
+      if (verified) { const r = verifyOtp(phone, body.otpCode, 'registration'); if (!r.valid) return sendJSON(res, 400, { error: r.error }); }
+      db.prepare('UPDATE users SET phone = ?, phone_verified = ? WHERE id = ?').run(phone, verified ? 1 : 0, user.id);
+      return sendJSON(res, 200, { message: 'Mobile number updated.', user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)) });
+    }
+
     if (parts[1] === 'bookings' && parts[3] === 'cancel' && req.method === 'PUT') {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
@@ -944,6 +1047,10 @@ async function handleApi(req, res, pathname, query) {
       }
       if (booking.booking_date < localNow().date || booking.settlement_id) {
         return sendJSON(res, 409, { error: 'Past appointments can no longer be cancelled. Please contact support.' });
+      }
+      const bspa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
+      if (!withinChangeWindow(booking, bspa)) {
+        return sendJSON(res, 409, { error: `Free cancellation ended ${bspa.cancel_window_hours} hours before your appointment. Please call the spa.` });
       }
 
       let refundMessage = '';
@@ -1012,7 +1119,21 @@ async function handleApi(req, res, pathname, query) {
         if (lng !== null && (isNaN(lng) || lng < -180 || lng > 180)) return sendJSON(res, 400, { error: 'Invalid longitude.' });
         body.longitude = lng;
       }
-      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude'];
+      if (body.name !== undefined && !String(body.name).trim()) return sendJSON(res, 400, { error: 'Spa name can’t be empty.' });
+      if (body.city !== undefined && !String(body.city).trim()) return sendJSON(res, 400, { error: 'City can’t be empty.' });
+      if (body.weekly_off !== undefined) {
+        const days = String(body.weekly_off).split(',').filter((x) => x !== '').map(Number);
+        if (days.some((d) => !Number.isInteger(d) || d < 0 || d > 6) || new Set(days).size > 6) return sendJSON(res, 400, { error: 'Choose valid weekly off days (at least one open day).' });
+        body.weekly_off = [...new Set(days)].sort().join(',');
+      }
+      if (body.cancel_window_hours !== undefined) {
+        const h = Number(body.cancel_window_hours);
+        if (!Number.isInteger(h) || h < 0 || h > 72) return sendJSON(res, 400, { error: 'Free-cancellation window must be between 0 and 72 hours.' });
+        body.cancel_window_hours = h;
+      }
+      const newOpen = body.opening_time ?? spa.opening_time, newClose = body.closing_time ?? spa.closing_time;
+      if (!/^\d{2}:\d{2}$/.test(newOpen) || !/^\d{2}:\d{2}$/.test(newClose) || newOpen >= newClose) return sendJSON(res, 400, { error: 'Closing time must be after opening time.' });
+      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude', 'weekly_off', 'cancel_window_hours'];
       const updates = [];
       const args = [];
       for (const f of fields) {
@@ -1082,6 +1203,11 @@ async function handleApi(req, res, pathname, query) {
       } else if (body.room_type_id === '') {
         body.room_type_id = null;
       }
+      if (body.name !== undefined && !String(body.name).trim()) return sendJSON(res, 400, { error: 'Service name can’t be empty.' });
+      if (body.price !== undefined && !(Number(body.price) > 0 && Number(body.price) <= 1000000)) return sendJSON(res, 400, { error: 'Price must be a positive amount.' });
+      if (body.duration_minutes !== undefined && !(Number.isInteger(Number(body.duration_minutes)) && Number(body.duration_minutes) >= 15 && Number(body.duration_minutes) <= 480)) return sendJSON(res, 400, { error: 'Duration must be between 15 and 480 minutes.' });
+      if (body.price !== undefined) body.price = Number(body.price);
+      if (body.duration_minutes !== undefined) body.duration_minutes = Number(body.duration_minutes);
       const fields = ['name', 'description', 'duration_minutes', 'price', 'active', 'discount_percent', 'room_type_id'];
       const updates = [];
       const args = [];
@@ -1383,7 +1509,7 @@ async function handleApi(req, res, pathname, query) {
     // ---------------- REVIEWS ----------------
     // Public: approved spa's visible reviews + summary
     if (parts[1] === 'spas' && parts[3] === 'reviews' && req.method === 'GET') {
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(parts[2]);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(parts[2]);
       if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
       const reviews = db.prepare(
         `SELECT r.id, r.rating, r.comment, r.owner_reply, r.owner_replied_at, r.created_at, u.name AS customer_name, sv.name AS service_name, b.booking_date
@@ -1463,7 +1589,7 @@ async function handleApi(req, res, pathname, query) {
       const placements = db.prepare(
         `SELECT f.*, s.name AS spa_name, s.city AS spa_city, u.name AS owner_name FROM featured_placements f JOIN spas s ON s.id = f.spa_id JOIN users u ON u.id = s.owner_id ORDER BY f.starts_on DESC, f.id DESC`
       ).all().map((f) => ({ ...f, state: f.cancelled ? 'cancelled' : f.ends_on < today ? 'expired' : f.starts_on > today ? 'upcoming' : 'active' }));
-      const spas = db.prepare("SELECT id, name, city FROM spas WHERE status = 'approved' ORDER BY name").all();
+      const spas = db.prepare("SELECT id, name, city FROM spas WHERE status = 'approved' AND suspended = 0 ORDER BY name").all();
       return sendJSON(res, 200, { placements, spas, today });
     }
 
@@ -1471,7 +1597,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
       const body = await parseBody(req);
-      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved'").get(body.spa_id);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(body.spa_id);
       if (!spa) return sendJSON(res, 400, { error: 'Choose an approved (live) spa.' });
       if (!isValidDate(body.starts_on) || !isValidDate(body.ends_on)) return sendJSON(res, 400, { error: 'Enter valid start and end dates.' });
       if (body.ends_on < body.starts_on) return sendJSON(res, 400, { error: 'End date must be on or after the start date.' });
@@ -1489,6 +1615,131 @@ async function handleApi(req, res, pathname, query) {
       if (!f) return sendJSON(res, 404, { error: 'Placement not found.' });
       db.prepare('UPDATE featured_placements SET cancelled = 1 WHERE id = ?').run(f.id);
       return sendJSON(res, 200, { message: 'Placement cancelled.' });
+    }
+
+    // ---------------- OWNER: CLOSED DATES ----------------
+    if (parts[1] === 'owner' && parts[2] === 'spas' && parts[4] === 'closures' && ['GET', 'POST'].includes(req.method)) {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      if (req.method === 'POST') {
+        const body = await parseBody(req);
+        if (!isValidDate(body.date) || body.date < localNow().date) return sendJSON(res, 400, { error: 'Choose today or a future date.' });
+        db.prepare('INSERT OR IGNORE INTO spa_closures (spa_id, date, reason) VALUES (?,?,?)').run(spa.id, body.date, String(body.reason || '').slice(0, 120));
+        const affected = db.prepare("SELECT COUNT(*) c FROM bookings WHERE spa_id = ? AND booking_date = ? AND status IN ('confirmed','pending_payment')").get(spa.id, body.date).c;
+        return sendJSON(res, 201, { message: affected ? `Closed on that date. ${affected} existing booking(s) on that day are kept — please contact those customers.` : 'Closed on that date.', affected });
+      }
+      return sendJSON(res, 200, { closures: db.prepare('SELECT * FROM spa_closures WHERE spa_id = ? AND date >= ? ORDER BY date').all(spa.id, localNow().date) });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'closures' && parts.length === 4 && req.method === 'DELETE') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const c = db.prepare('SELECT c.* FROM spa_closures c JOIN spas s ON s.id = c.spa_id WHERE c.id = ? AND s.owner_id = ?').get(parts[3], user.id);
+      if (!c) return sendJSON(res, 404, { error: 'Not found.' });
+      db.prepare('DELETE FROM spa_closures WHERE id = ?').run(c.id);
+      return sendJSON(res, 200, { message: 'Open again on that date.' });
+    }
+
+    // ---------------- OWNER: CALENDAR & WALK-INS ----------------
+    if (parts[1] === 'owner' && parts[2] === 'spas' && parts[4] === 'calendar' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const date = query.get('date') || localNow().date;
+      if (!isValidDate(date)) return sendJSON(res, 400, { error: 'Invalid date.' });
+      const bookings = db.prepare(
+        `SELECT b.id, b.booking_ref, b.start_time, b.end_time, b.status, b.payment_mode, b.payment_status, b.amount,
+                sv.name AS service_name, sv.room_type_id, u.name AS customer_name, u.phone AS customer_phone
+         FROM bookings b JOIN services sv ON sv.id = b.service_id JOIN users u ON u.id = b.customer_id
+         WHERE b.spa_id = ? AND b.booking_date = ? AND b.status IN ('pending_payment','confirmed','completed') ORDER BY b.start_time`).all(spa.id, date);
+      return sendJSON(res, 200, {
+        spa: { id: spa.id, name: spa.name, opening_time: spa.opening_time, closing_time: spa.closing_time }, date, closed: closureReason(spa, date),
+        roomTypes: db.prepare('SELECT id, name, capacity FROM room_types WHERE spa_id = ?').all(spa.id),
+        bookings, blocks: db.prepare('SELECT * FROM slot_blocks WHERE spa_id = ? AND date = ? ORDER BY start_time').all(spa.id, date),
+      });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'spas' && parts[4] === 'blocks' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const body = await parseBody(req);
+      const { date, start_time: st, end_time: et } = body;
+      if (!isValidDate(date) || date < localNow().date) return sendJSON(res, 400, { error: 'Choose today or a future date.' });
+      if (!/^\d{2}:\d{2}$/.test(st || '') || !/^\d{2}:\d{2}$/.test(et || '') || st >= et) return sendJSON(res, 400, { error: 'End time must be after start time.' });
+      if (st < spa.opening_time || et > spa.closing_time) return sendJSON(res, 400, { error: `Choose a time within opening hours (${spa.opening_time}–${spa.closing_time}).` });
+      const s0 = timeToMinutes(st), e0 = timeToMinutes(et);
+      const overlaps = (a, b) => timeToMinutes(a) < e0 && timeToMinutes(b) > s0;
+      let roomTypeId = null, qty = 1;
+      if (body.room_type_id) {
+        const rt = db.prepare('SELECT * FROM room_types WHERE id = ? AND spa_id = ?').get(body.room_type_id, spa.id);
+        if (!rt) return sendJSON(res, 400, { error: 'Choose a valid room type.' });
+        roomTypeId = rt.id; qty = Number(body.qty || 1);
+        if (!Number.isInteger(qty) || qty < 1 || qty > rt.capacity) return sendJSON(res, 400, { error: `Rooms must be between 1 and ${rt.capacity}.` });
+        // Peak occupancy inside the requested window (bookings + existing blocks) must leave room for this block.
+        const items = [
+          ...db.prepare(`SELECT b.start_time, b.end_time, 1 AS q FROM bookings b JOIN services sv ON sv.id = b.service_id WHERE b.spa_id = ? AND b.booking_date = ? AND sv.room_type_id = ? AND b.status IN ('pending_payment','confirmed')`).all(spa.id, date, rt.id),
+          ...db.prepare('SELECT start_time, end_time, qty AS q FROM slot_blocks WHERE spa_id = ? AND date = ? AND room_type_id = ?').all(spa.id, date, rt.id),
+        ].filter((x) => overlaps(x.start_time, x.end_time));
+        const points = [s0, ...items.map((x) => timeToMinutes(x.start_time))].filter((m) => m >= s0 && m < e0);
+        const peak = Math.max(0, ...points.map((m) => items.filter((x) => timeToMinutes(x.start_time) <= m && timeToMinutes(x.end_time) > m).reduce((a, x) => a + x.q, 0)));
+        if (peak + qty > rt.capacity) return sendJSON(res, 409, { error: `Only ${Math.max(0, rt.capacity - peak)} ${rt.name} free at the busiest point of that time.` });
+      } else {
+        const clash = db.prepare("SELECT COUNT(*) c FROM bookings WHERE spa_id = ? AND booking_date = ? AND status IN ('pending_payment','confirmed') AND start_time < ? AND end_time > ?").get(spa.id, date, et, st).c;
+        if (clash) return sendJSON(res, 409, { error: `${clash} booking(s) already fall in that time. Block specific rooms instead, or reschedule those bookings first.` });
+      }
+      const info = db.prepare('INSERT INTO slot_blocks (spa_id, room_type_id, date, start_time, end_time, qty, reason) VALUES (?,?,?,?,?,?,?)')
+        .run(spa.id, roomTypeId, date, st, et, qty, String(body.reason || 'Walk-in').slice(0, 80));
+      return sendJSON(res, 201, { message: 'Time blocked — those slots are no longer bookable online.', id: Number(info.lastInsertRowid) });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'blocks' && parts.length === 4 && req.method === 'DELETE') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const bl = db.prepare('SELECT bl.* FROM slot_blocks bl JOIN spas s ON s.id = bl.spa_id WHERE bl.id = ? AND s.owner_id = ?').get(parts[3], user.id);
+      if (!bl) return sendJSON(res, 404, { error: 'Not found.' });
+      db.prepare('DELETE FROM slot_blocks WHERE id = ?').run(bl.id);
+      return sendJSON(res, 200, { message: 'Block removed — those slots are bookable again.' });
+    }
+
+    // ---------------- ADMIN: EDIT / DEACTIVATE ----------------
+    if (parts[1] === 'admin' && parts[2] === 'users' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const target = db.prepare('SELECT * FROM users WHERE id = ?').get(parts[3]);
+      if (!target) return sendJSON(res, 404, { error: 'User not found.' });
+      const body = await parseBody(req);
+      if (body.active !== undefined) {
+        if (target.role === 'admin') return sendJSON(res, 400, { error: 'Admin accounts can’t be deactivated here.' });
+        const active = body.active ? 1 : 0;
+        db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, target.id);
+        if (target.role === 'owner') db.prepare('UPDATE spas SET suspended = ? WHERE owner_id = ?').run(active ? 0 : 1, target.id);
+      }
+      const name = body.name !== undefined ? String(body.name).trim() : target.name;
+      const email = body.email !== undefined ? String(body.email).trim().toLowerCase() : target.email;
+      const phone = body.phone !== undefined ? (normalizePhone(body.phone) || null) : target.phone;
+      if (name.length < 2) return sendJSON(res, 400, { error: 'Enter a name.' });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJSON(res, 400, { error: 'Enter a valid email.' });
+      if (db.prepare('SELECT id FROM users WHERE lower(email) = ? AND id != ?').get(email, target.id)) return sendJSON(res, 409, { error: 'Another account already uses this email.' });
+      if (phone && db.prepare('SELECT id FROM users WHERE phone = ? AND id != ?').get(phone, target.id)) return sendJSON(res, 409, { error: 'Another account already uses this number.' });
+      db.prepare('UPDATE users SET name = ?, email = ?, phone = ?, phone_verified = CASE WHEN ? = phone THEN phone_verified ELSE 0 END WHERE id = ?').run(name, email, phone, phone, target.id);
+      const fresh = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at, active FROM users WHERE id = ?').get(target.id);
+      return sendJSON(res, 200, { message: body.active === undefined ? 'Saved.' : body.active ? 'Account reactivated.' : 'Account deactivated — they can no longer log in' + (target.role === 'owner' ? ', and their spas are hidden.' : '.'), user: fresh });
+    }
+    if (parts[1] === 'admin' && parts[2] === 'spas' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(parts[3]);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      const body = await parseBody(req);
+      const next = { ...spa };
+      for (const f of ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time']) if (body[f] !== undefined) next[f] = String(body[f]).trim();
+      if (!next.name || !next.city) return sendJSON(res, 400, { error: 'Name and city are required.' });
+      if (!/^\d{2}:\d{2}$/.test(next.opening_time) || !/^\d{2}:\d{2}$/.test(next.closing_time) || next.opening_time >= next.closing_time) return sendJSON(res, 400, { error: 'Closing time must be after opening time.' });
+      db.prepare('UPDATE spas SET name = ?, description = ?, city = ?, address = ?, phone = ?, opening_time = ?, closing_time = ? WHERE id = ?')
+        .run(next.name, next.description, next.city, next.address, next.phone, next.opening_time, next.closing_time, spa.id);
+      return sendJSON(res, 200, { message: 'Spa details saved.' });
     }
 
     // ---------------- OWNER: EARNINGS & SETTLEMENTS ----------------
@@ -1613,7 +1864,7 @@ async function handleApi(req, res, pathname, query) {
       let users;
       if (role === 'customer') {
         users = db.prepare(
-          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at,
+          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at, u.active,
                   COUNT(b.id) AS booking_count,
                   COALESCE(SUM(CASE WHEN b.payment_status = 'paid' THEN b.amount ELSE 0 END), 0) AS total_spent,
                   MAX(b.booking_date) AS last_booking
@@ -1621,7 +1872,7 @@ async function handleApi(req, res, pathname, query) {
            WHERE u.role = 'customer' GROUP BY u.id ORDER BY u.created_at DESC`).all();
       } else if (role === 'owner') {
         users = db.prepare(
-          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at,
+          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at, u.active,
                   COUNT(s.id) AS spa_count,
                   SUM(CASE WHEN s.status = 'approved' THEN 1 ELSE 0 END) AS live_spas,
                   SUM(CASE WHEN s.status = 'pending' THEN 1 ELSE 0 END) AS pending_spas,
@@ -1638,7 +1889,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'admin' && parts[2] === 'users' && parts.length === 4 && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
-      const target = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at FROM users WHERE id = ?').get(parts[3]);
+      const target = db.prepare('SELECT id, name, email, phone, phone_verified, role, created_at, active FROM users WHERE id = ?').get(parts[3]);
       if (!target) return sendJSON(res, 404, { error: 'User not found.' });
 
       if (target.role === 'customer') {
@@ -1760,4 +2011,31 @@ async function handleApi(req, res, pathname, query) {
   }
 }
 
-module.exports = { handleApi };
+// ---------------- APPOINTMENT REMINDERS (~2 hours before) ----------------
+async function runReminders() {
+  const today = localNow().date, tomorrow = new Date(Date.parse(today + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+  const due = db.prepare(
+    `SELECT * FROM bookings WHERE status = 'confirmed' AND reminder_sent = 0 AND booking_date IN (?, ?)`
+  ).all(today, tomorrow).filter((b) => {
+    const until = appointmentMs(b) - Date.now();
+    const bookedLongAgo = Date.now() - Date.parse(String(b.created_at).replace(' ', 'T') + 'Z') > 60 * 60000;
+    return until > 0 && until <= 2 * 3600000 && bookedLongAgo; // a customer who booked 30 minutes ago doesn't need a reminder
+  });
+  let sent = 0;
+  for (const b of due) {
+    db.prepare('UPDATE bookings SET reminder_sent = 1 WHERE id = ?').run(b.id); // mark first: never double-send
+    try {
+      await notifier.sendReminder({ booking: b, customer: db.prepare('SELECT * FROM users WHERE id = ?').get(b.customer_id),
+        spa: db.prepare('SELECT * FROM spas WHERE id = ?').get(b.spa_id), service: db.prepare('SELECT * FROM services WHERE id = ?').get(b.service_id) });
+      sent++;
+    } catch (e) { console.error('Reminder failed for booking', b.booking_ref, e.message); }
+  }
+  return sent;
+}
+function startReminderScheduler() {
+  const tick = () => runReminders().catch((e) => console.error('Reminder scheduler error:', e.message));
+  setTimeout(tick, 30000).unref();
+  setInterval(tick, 10 * 60000).unref();
+}
+
+module.exports = { handleApi, runReminders, startReminderScheduler };

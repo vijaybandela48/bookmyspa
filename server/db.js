@@ -436,6 +436,27 @@ function backfillBookingRefs() {
   if (rows.length) console.log(`Assigned booking IDs to ${rows.length} existing booking(s).`);
 }
 
+// ---- Phase-1 operations features (additive only) ----
+try {
+  const has = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some((x) => x.name === c);
+  if (!has('users', 'active')) db.exec('ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
+  if (!has('spas', 'weekly_off')) db.exec("ALTER TABLE spas ADD COLUMN weekly_off TEXT NOT NULL DEFAULT ''");
+  if (!has('spas', 'cancel_window_hours')) db.exec('ALTER TABLE spas ADD COLUMN cancel_window_hours INTEGER NOT NULL DEFAULT 4');
+  if (!has('spas', 'suspended')) db.exec('ALTER TABLE spas ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0');
+  if (!has('bookings', 'rescheduled_count')) db.exec('ALTER TABLE bookings ADD COLUMN rescheduled_count INTEGER NOT NULL DEFAULT 0');
+  if (!has('bookings', 'reminder_sent')) db.exec('ALTER TABLE bookings ADD COLUMN reminder_sent INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spa_closures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, spa_id INTEGER NOT NULL REFERENCES spas(id),
+      date TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(spa_id, date));
+    CREATE TABLE IF NOT EXISTS slot_blocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, spa_id INTEGER NOT NULL REFERENCES spas(id),
+      room_type_id INTEGER REFERENCES room_types(id), date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+      qty INTEGER NOT NULL DEFAULT 1, reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE INDEX IF NOT EXISTS idx_blocks_spa_date ON slot_blocks(spa_id, date);
+  `);
+} catch (e) { console.error('Migration error:', e.message); }
+
 seed();
 backfillBookingRefs();
 

@@ -27,6 +27,7 @@
     <div>
       <div class="panel" id="bookingPanel">
         <h3>Book a slot</h3>
+        <p class="helper-text" id="policyNote" style="margin:0 0 6px"></p>
         <p class="helper-text" id="bookingHint">Select a service to see available times.</p>
         <div id="bookingBody"></div>
       </div>
@@ -91,11 +92,12 @@ async function loadSpa() {
           <div class="eyebrow">📍 ${spa.city}</div>
           <h1 style="font-size:30px;margin:4px 0">${spa.name}</h1>
           <p style="color:var(--ink-soft);margin:0 0 4px">${spa.description || ''}</p>
-          <p style="font-size:13.5px;color:var(--ink-soft)">${spa.address || ''} · Open ${formatTime(spa.opening_time)} – ${formatTime(spa.closing_time)} · ${ratingHtml(spa)}${(() => { const me = savedLocation(); return me && spa.latitude != null ? ` · <span class="dist">${fmtDistance(haversineKm(me, { lat: spa.latitude, lng: spa.longitude }))}</span>` : ''; })()}</p>
+          <p style="font-size:13.5px;color:var(--ink-soft)">${spa.address || ''} · Open ${formatTime(spa.opening_time)} – ${formatTime(spa.closing_time)}${spa.weekly_off ? ', closed ' + spa.weekly_off.split(',').map(d => ['Sundays','Mondays','Tuesdays','Wednesdays','Thursdays','Fridays','Saturdays'][d]).join(' & ') : ''} · ${ratingHtml(spa)}${(() => { const me = savedLocation(); return me && spa.latitude != null ? ` · <span class="dist">${fmtDistance(haversineKm(me, { lat: spa.latitude, lng: spa.longitude }))}</span>` : ''; })()}</p>
         </div>
       </div>
     `;
     renderGallery(media || []);
+    const pol = document.getElementById('policyNote'); if (pol) pol.textContent = spa.cancel_window_hours ? `Free cancellation and rescheduling up to ${spa.cancel_window_hours} hours before your appointment.` : 'Free cancellation and rescheduling any time before your appointment.';
     renderLocation(spa);
     loadReviews();
     renderServices();
@@ -119,7 +121,7 @@ async function loadReviews() {
       <h3 style="margin-bottom:14px">Reviews</h3>
       <div style="display:flex;gap:30px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
         <div style="text-align:center;min-width:120px">
-          <div style="font-family:Fraunces,serif;font-size:44px;font-weight:700;color:var(--moss-deep);line-height:1">${summary.rating.toFixed(1)}</div>
+          <div style="font-family:'Marcellus',Georgia,serif;font-size:44px;font-weight:700;color:var(--moss-deep);line-height:1">${summary.rating.toFixed(1)}</div>
           <div class="stars" style="color:var(--gold);font-size:18px">${starsHtml(Math.round(summary.rating))}</div>
           <div class="helper-text" style="margin:2px 0 0">${summary.count} verified review${summary.count !== 1 ? 's' : ''}</div>
         </div>
@@ -244,9 +246,9 @@ async function loadSlots() {
   const grid = document.getElementById('slotGrid');
   grid.innerHTML = '<p class="helper-text">Loading times…</p>';
   try {
-    const { slots } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}`);
+    const { slots, closed } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}`);
     if (!slots.length) {
-      grid.innerHTML = `<p class="helper-text">No slots available this day.</p>`;
+      grid.innerHTML = `<p class="helper-text">${closed ? esc(closed) + ' — please pick another day.' : 'No times left this day — please pick another day.'}</p>`;
       return;
     }
     grid.innerHTML = slots.map(s => `
@@ -393,9 +395,8 @@ async function confirmBooking() {
 
     if (paymentMode === 'pay_at_venue') {
       // Booking is already confirmed server-side — nothing else to do.
-      toast(message || 'Booking confirmed! Pay at the spa.');
       closePayModal();
-      setTimeout(() => window.location.href = '/account.html', 900);
+      celebrate('Booking confirmed', (message || 'Pay at the spa.') + ' Confirmation sent by SMS & WhatsApp.', () => window.location.href = '/account.html');
       return;
     }
 
@@ -453,9 +454,8 @@ async function finishVerification(bookingId, payload) {
     const result = await API.post(`/bookings/${bookingId}/verify`, payload);
     if (result.success) {
       const channelLabel = 'SMS & WhatsApp';
-      toast(`Payment successful! Confirmation sent via ${channelLabel}.`);
       closePayModal();
-      setTimeout(() => window.location.href = '/account.html', 900);
+      celebrate('Payment received — you’re booked', `Confirmation sent via ${channelLabel}.`, () => window.location.href = '/account.html');
     } else {
       toast(result.message, 'error');
       btn.disabled = false; btn.textContent = 'Try again';
