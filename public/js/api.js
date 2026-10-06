@@ -95,7 +95,9 @@ function formatDate(iso) {
   if (!iso) return '';
   const d = new Date(String(iso).slice(0, 10) + 'T00:00:00');
   if (isNaN(d)) return esc(iso);
-  return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+  const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric'; // e.g. a gift card valid until next year
+  return d.toLocaleDateString('en-IN', opts);
 }
 function formatTime(t) {
   if (!t || !/^\d{1,2}:\d{2}/.test(t)) return esc(t || '');
@@ -122,7 +124,7 @@ function renderNav(active) {
   let right = '';
   if (PORTAL === 'customer') {
     right = user
-      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><a href="/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
+      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><a href="/wallet.html" class="nav-link ${active === 'wallet' ? 'active' : ''}">Wallet</a><a href="/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
       : `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
   } else if (PORTAL === 'partner') {
     right = user
@@ -224,4 +226,27 @@ function celebrate(title, detail, then) {
   document.body.appendChild(el);
   const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   setTimeout(() => { el.remove(); if (then) then(); }, reduce ? 900 : 1900);
+}
+
+
+// ---------------- Paying for gift cards & packages ----------------
+let _rzp = null;
+function rzpLoad() {
+  if (window.Razorpay) return Promise.resolve();
+  if (!_rzp) _rzp = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://checkout.razorpay.com/v1/checkout.js'; s.onload = res; s.onerror = () => rej(new Error('Could not load the payment form. Check your connection.')); document.head.appendChild(s); });
+  return _rzp;
+}
+// Runs checkout for a purchase and resolves with the verify result (or throws if cancelled/failed).
+async function payPurchase(purchaseId, description) {
+  const order = await API.post(`/purchases/${purchaseId}/checkout`);
+  if (order.mode !== 'razorpay') {
+    return API.post(`/purchases/${purchaseId}/verify`, { mode: 'mock', orderId: order.orderId, paymentId: 'mock_' + Date.now(), signature: 'mock' });
+  }
+  await rzpLoad();
+  return new Promise((resolve, reject) => {
+    new Razorpay({ key: order.keyId, order_id: order.orderId, amount: order.amountPaise, currency: order.currency, name: 'BookMySpa', description, prefill: order.prefill,
+      theme: { color: '#2F5D50' },
+      handler: (r) => API.post(`/purchases/${purchaseId}/verify`, { mode: 'razorpay', orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }).then(resolve, reject),
+      modal: { ondismiss: () => reject(new Error('Payment cancelled.')) } }).open();
+  });
 }

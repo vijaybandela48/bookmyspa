@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wallet — BookMySpa</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap page-body" style="max-width:880px">
+  <h1>Wallet</h1>
+  <p class="helper-text" style="margin-bottom:22px">Gift cards you’ve bought and spa packages you can book from.</p>
+  <div class="two-col">
+    <div class="panel">
+      <h3>Send a gift card</h3>
+      <p class="helper-text">Works at every spa on BookMySpa, for 12 months.</p>
+      <div class="t-chips" id="gcAmounts"></div>
+      <label for="gcCustom">Or another amount (₹500–₹50,000)</label><input id="gcCustom" type="number" min="500" max="50000" step="100" placeholder="e.g. 2500">
+      <label for="gcTo">For</label><input id="gcTo" maxlength="60" placeholder="Their name">
+      <label for="gcMsg">Message</label><textarea id="gcMsg" rows="2" maxlength="200" placeholder="Happy birthday — enjoy a little calm!"></textarea>
+      <button class="btn gold block" style="margin-top:16px" id="gcBuy" onclick="buyGiftCard()">Buy gift card</button>
+      <p class="helper-text" id="gcNote"></p>
+    </div>
+    <div id="gcFresh"></div>
+  </div>
+  <h2 style="margin:28px 0 12px">Your packages</h2>
+  <div id="pkgList"><p>Loading…</p></div>
+  <h2 style="margin:28px 0 12px">Your gift cards</h2>
+  <div id="gcList"><p>Loading…</p></div>
+</div>
+<div id="sb-footer"></div>
+<script src="/js/api.js"></script>
+<script>
+renderNav('wallet'); renderFooter();
+let gcAmount = 2000;
+function amountChips() {
+  document.getElementById('gcAmounts').innerHTML = [1000, 2000, 3000, 5000].map(a => `<button type="button" class="t-chip ${gcAmount === a && !document.getElementById('gcCustom').value ? 'on' : ''}" onclick="gcAmount=${a};document.getElementById('gcCustom').value='';amountChips()">${money(a)}</button>`).join('');
+}
+function giftCardHtml(g, fresh) {
+  const share = `I got you a BookMySpa gift card worth ${money(g.amount)}${g.recipient_name ? ', ' + g.recipient_name : ''}! Use code ${g.code} at checkout on ${location.origin} (valid until ${formatDate(g.expires_at)}).`;
+  return `<div class="gift-card ${fresh ? 'fresh' : ''}">
+    <div class="gc-top"><span class="brand" style="color:#F6F1EA">🌿 BookMySpa</span><span class="gc-amt">${money(g.balance ?? g.amount)}</span></div>
+    <div class="gc-code mono">${esc(g.code)}</div>
+    <div class="gc-meta">${g.recipient_name ? 'For ' + esc(g.recipient_name) + ' · ' : ''}${g.balance !== undefined && g.balance !== g.amount ? 'of ' + money(g.amount) + ' · ' : ''}valid until ${formatDate(g.expires_at)}</div>
+    <div class="gc-actions"><button class="btn small outline" onclick="navigator.clipboard.writeText('${g.code}').then(()=>toast('Code copied.'))">Copy code</button>
+      <a class="btn small gold" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(share)}">Share on WhatsApp</a></div></div>`;
+}
+async function load() {
+  try {
+    const w = await API.get('/wallet');
+    if (!w.onlinePayments) { document.getElementById('gcBuy').disabled = true; document.getElementById('gcNote').textContent = 'Gift cards go on sale as soon as online payments are switched on.'; }
+    document.getElementById('pkgList').innerHTML = w.packages.length ? w.packages.map(p => {
+      const left = p.sessions_total - p.sessions_used;
+      return `<div class="panel" style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px"><h3 style="margin:0">${esc(p.name)}</h3><p class="helper-text" style="margin:2px 0 8px">${esc(p.spa_name)} · ${esc(p.service_name)} · valid until ${formatDate(p.expires_at)}</p>
+          <div class="bar" style="max-width:320px"><span style="width:${(p.sessions_used / p.sessions_total) * 100}%"></span></div>
+          <p class="helper-text" style="margin:6px 0 0">${left} of ${p.sessions_total} session${p.sessions_total !== 1 ? 's' : ''} left</p></div>
+        ${left > 0 ? `<a class="btn gold" href="/spa.html?id=${p.spa_id}">Book a session</a>` : '<span class="badge completed">All sessions used</span>'}</div>`; }).join('')
+      : '<p class="helper-text">No packages yet. Spas that offer them show a “Packages” section on their page.</p>';
+    document.getElementById('gcList').innerHTML = w.giftCards.length ? `<div class="gc-grid">${w.giftCards.map(g => giftCardHtml(g)).join('')}</div>` : '<p class="helper-text">Gift cards you buy appear here, ready to share.</p>';
+  } catch (e) { document.getElementById('pkgList').innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function buyGiftCard() {
+  const custom = Number(document.getElementById('gcCustom').value || 0), amount = custom || gcAmount;
+  const btn = document.getElementById('gcBuy'); btn.disabled = true;
+  try {
+    const { purchaseId } = await API.post('/giftcards', { amount, recipient_name: document.getElementById('gcTo').value.trim(), message: document.getElementById('gcMsg').value.trim() });
+    const r = await payPurchase(purchaseId, 'Gift card');
+    if (!r.success) throw new Error(r.message || 'Payment failed.');
+    document.getElementById('gcFresh').innerHTML = `<h3 style="margin:0 0 10px">Your gift card is ready</h3>` + giftCardHtml(r.giftCard, true);
+    toast('Gift card ready to share.'); load();
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+document.getElementById('gcCustom').addEventListener('input', amountChips);
+if (API.requireRole()) { amountChips(); load(); }
+</script>
+</body>
+</html>

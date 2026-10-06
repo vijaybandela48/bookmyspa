@@ -138,6 +138,7 @@ function publicSpa(s) {
     latitude: s.latitude, longitude: s.longitude,
     allow_pay_at_venue: s.allow_pay_at_venue !== 0,
     weekly_off: s.weekly_off || '', cancel_window_hours: s.cancel_window_hours ?? 4,
+    legal_name: s.legal_name || null, gstin: s.gstin || null, gst_rate: s.gst_rate ?? 18,
     ...featuredInfo(s.id),
     owner_id: s.owner_id,
   };
@@ -161,10 +162,11 @@ function withDiscount(sv) {
 
 // Cancel stale pending-payment bookings older than 10 minutes so slots free up
 function cleanupStaleBookings() {
-  db.prepare(
-    `UPDATE bookings SET status='cancelled'
-     WHERE status='pending_payment' AND created_at < datetime('now','-10 minutes')`
-  ).run();
+  const stale = db.prepare(`SELECT * FROM bookings WHERE status='pending_payment' AND created_at < datetime('now','-10 minutes')`).all();
+  for (const b of stale) {
+    const r = db.prepare("UPDATE bookings SET status='cancelled', cancel_reason='payment_timeout' WHERE id = ? AND status='pending_payment'").run(b.id);
+    if (r.changes && b.gift_card_id && b.giftcard_amount > 0) restoreGift(b);
+  }
 }
 
 function timeToMinutes(t) {
@@ -258,15 +260,16 @@ function applyCommission(bookingId, spa, amount) {
 function settlementSummary(spaId) {
   const today = localNow().date;
   const rows = db.prepare(
-    `SELECT id, amount, commission_amount, payment_mode FROM bookings
-     WHERE spa_id = ? AND settlement_id IS NULL
+    `SELECT id, amount, commission_amount, payment_mode, giftcard_amount FROM bookings
+     WHERE spa_id = ? AND settlement_id IS NULL AND route_transfer = 0
        AND (status = 'completed' OR (status = 'confirmed' AND booking_date < ?))
        AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
   ).all(spaId, today);
   const s = { bookingIds: rows.map((r) => r.id), count: rows.length, onlineGross: 0, onlineCommission: 0, venueGross: 0, venueCommission: 0 };
   for (const r of rows) {
+    // onlineGross = money BookMySpa holds (online payments, gift cards, prepaid packages); venueGross = money the spa took at the counter
     if (r.payment_mode === 'online') { s.onlineGross += r.amount; s.onlineCommission += r.commission_amount; }
-    else { s.venueGross += r.amount; s.venueCommission += r.commission_amount; }
+    else { s.onlineGross += r.giftcard_amount || 0; s.venueGross += r.amount - (r.giftcard_amount || 0); s.venueCommission += r.commission_amount; }
   }
   for (const k of ['onlineGross', 'onlineCommission', 'venueGross', 'venueCommission']) s[k] = round2(s[k]);
   s.commissionTotal = round2(s.onlineCommission + s.venueCommission);
@@ -299,6 +302,148 @@ function parseCoords(text) {
 }
 const MAP_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|maps\.google\.[a-z.]+|(www\.)?google\.[a-z.]+)$/i;
 
+// ---------------- THERAPISTS ----------------
+function therapistsForService(serviceId) {
+  return db.prepare(`SELECT t.* FROM therapists t JOIN therapist_services ts ON ts.therapist_id = t.id
+                     WHERE ts.service_id = ? AND t.active = 1 ORDER BY t.name`).all(serviceId);
+}
+function eligibleTherapists(serviceId, opts = {}) {
+  let list = therapistsForService(serviceId);
+  if (opts.therapistId) list = list.filter((t) => t.id === Number(opts.therapistId));
+  else if (opts.gender === 'female' || opts.gender === 'male') list = list.filter((t) => t.gender === opts.gender);
+  return list;
+}
+function therapistBookings(spaId, date, excludeId = -1) {
+  return db.prepare(`SELECT therapist_id, start_time, end_time FROM bookings WHERE spa_id = ? AND booking_date = ?
+                     AND therapist_id IS NOT NULL AND status IN ('pending_payment','confirmed') AND id != ?`).all(spaId, date, excludeId);
+}
+// Picks a free matching therapist, spreading work evenly (fewest bookings that day first).
+function pickTherapist(spaId, serviceId, date, st, et, opts = {}, excludeId = -1) {
+  const s0 = timeToMinutes(st), e0 = timeToMinutes(et);
+  const tb = therapistBookings(spaId, date, excludeId);
+  const free = eligibleTherapists(serviceId, opts).filter((t) => !tb.some((b) => b.therapist_id === t.id && s0 < timeToMinutes(b.end_time) && e0 > timeToMinutes(b.start_time)));
+  const load = (id) => tb.filter((b) => b.therapist_id === id).length;
+  return free.sort((a, b) => load(a.id) - load(b.id))[0] || null;
+}
+function therapistOpts(src) {
+  return { therapistId: src.therapistId ? Number(src.therapistId) : null, gender: ['female', 'male'].includes(src.gender) ? src.gender : null };
+}
+
+// ---------------- GIFT CARDS ----------------
+function findGiftCard(code) {
+  const c = db.prepare('SELECT * FROM gift_cards WHERE code = ? COLLATE NOCASE').get(String(code || '').trim().toUpperCase());
+  if (!c || c.status !== 'active') return { error: 'That gift card code isn’t valid.' };
+  if (c.expires_at && c.expires_at < localNow().date) return { error: 'This gift card has expired.' };
+  if (c.balance <= 0) return { error: 'This gift card has no balance left.' };
+  return { card: c };
+}
+function restoreGift(b) {
+  db.prepare('UPDATE gift_cards SET balance = balance + ? WHERE id = ?').run(b.giftcard_amount, b.gift_card_id);
+  db.prepare("INSERT INTO gift_card_uses (gift_card_id, booking_id, amount, kind) VALUES (?,?,?,'restore')").run(b.gift_card_id, b.id, b.giftcard_amount);
+}
+function newGiftCode() {
+  const C = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (;;) {
+    const part = () => Array.from({ length: 4 }, () => C[crypto.randomInt(C.length)]).join('');
+    const code = `GIFT-${part()}-${part()}`;
+    if (!db.prepare('SELECT 1 FROM gift_cards WHERE code = ?').get(code)) return code;
+  }
+}
+function addDaysISO(iso, n) { return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10); }
+// Marks a gift-card / package purchase paid and activates it. Idempotent (safe for webhook + browser).
+function activatePurchase(purchaseId, paymentRef) {
+  const p = db.prepare('SELECT * FROM purchases WHERE id = ?').get(purchaseId);
+  if (!p || p.status === 'paid') return p;
+  db.prepare("UPDATE purchases SET status = 'paid', payment_ref = ? WHERE id = ?").run(paymentRef || null, p.id);
+  const today = localNow().date;
+  if (p.kind === 'giftcard') {
+    db.prepare("UPDATE gift_cards SET status = 'active', code = ?, expires_at = ? WHERE id = ? AND status = 'pending'").run(newGiftCode(), addDaysISO(today, 365), p.ref_id);
+  } else {
+    const cp = db.prepare('SELECT cp.*, pk.validity_days FROM customer_packages cp JOIN packages pk ON pk.id = cp.package_id WHERE cp.id = ?').get(p.ref_id);
+    db.prepare("UPDATE customer_packages SET status = 'active', expires_at = ? WHERE id = ? AND status = 'pending'").run(addDaysISO(today, cp.validity_days), p.ref_id);
+  }
+  return db.prepare('SELECT * FROM purchases WHERE id = ?').get(p.id);
+}
+
+// ---------------- RAZORPAY ROUTE (automatic payouts to spas) ----------------
+// For a plain online booking at a spa with a linked Razorpay account, the spa's share is sent straight
+// to that account, held until the day after the appointment so cancellations can still be refunded.
+function routeTransfersFor(booking, spa) {
+  if (!gateway.isLive || process.env.RAZORPAY_ROUTE !== 'on' || !spa.razorpay_account_id) return [];
+  if (booking.giftcard_amount > 0 || booking.customer_package_id) return []; // mixed funding stays on the ledger
+  const share = Math.round((booking.amount - booking.commission_amount) * 100);
+  if (share < 100) return [];
+  return [{ account: spa.razorpay_account_id, amount: share, currency: 'INR', notes: { booking_ref: booking.booking_ref || String(booking.id) },
+            linked_account_notes: ['booking_ref'], on_hold: true, on_hold_until: Math.floor(appointmentMs(booking) / 1000) + 24 * 3600 }];
+}
+
+// ---------------- GST INVOICES ----------------
+function fullAddress(sp) { const a = sp.address || '', c = sp.city || ''; return a.toLowerCase().includes(c.toLowerCase()) ? a : [a, c].filter(Boolean).join(', '); }
+const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+function fyOf(iso) { const y = Number(iso.slice(2, 4)), m = Number(iso.slice(5, 7)); return m >= 4 ? `${y}-${y + 1}` : `${y - 1}-${y}`; }
+function nextInvoiceNo(series, fy, width) {
+  const seq = (db.prepare('SELECT MAX(seq) m FROM invoices WHERE series = ? AND fy = ?').get(series, fy).m || 0) + 1;
+  return { seq, no: `${series}/${fy}/${String(seq).padStart(width, '0')}` };
+}
+function gstSplit(gross, rate, supplierGstin, recipientGstin) {
+  const taxable = round2(gross / (1 + rate / 100)), tax = round2(gross - taxable);
+  const inter = supplierGstin && recipientGstin && supplierGstin.slice(0, 2) !== recipientGstin.slice(0, 2);
+  return inter ? { taxable, rate, igst: tax } : { taxable, rate, cgst: round2(tax / 2), sgst: round2(tax - round2(tax / 2)) };
+}
+function bookingInvoice(b) {
+  const existing = db.prepare('SELECT * FROM invoices WHERE booking_id = ?').get(b.id);
+  if (existing) return { ...JSON.parse(existing.data), invoice_no: existing.invoice_no, issued_at: existing.issued_at };
+  const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(b.spa_id), sv = db.prepare('SELECT * FROM services WHERE id = ?').get(b.service_id);
+  const cu = db.prepare('SELECT name, phone, email FROM users WHERE id = ?').get(b.customer_id);
+  const th = b.therapist_id ? db.prepare('SELECT name FROM therapists WHERE id = ?').get(b.therapist_id) : null;
+  const registered = !!(spa.gstin && GSTIN_RE.test(spa.gstin));
+  const giftPart = b.giftcard_amount || 0, pkgPart = b.customer_package_id ? b.amount : 0;
+  const counter = db.prepare("SELECT method FROM payments WHERE booking_id = ? AND status = 'success' AND transaction_ref LIKE 'COUNTER_%' ORDER BY id DESC").get(b.id);
+  const data = {
+    kind: 'customer', title: registered ? 'Tax invoice' : 'Receipt',
+    supplier: { name: spa.legal_name || spa.name, trade_name: spa.name, address: fullAddress(spa), phone: spa.phone, gstin: registered ? spa.gstin : null },
+    recipient: { name: cu.name, phone: cu.phone, email: cu.email },
+    booking: { ref: b.booking_ref, date: b.booking_date, time: b.start_time, service: sv.name, therapist: th ? th.name : null },
+    lines: [{ description: `${sv.name} (${sv.duration_minutes} min)${pkgPart ? ' — package session' : ''}`, amount: round2(b.amount + (b.coupon_discount || 0)) }],
+    coupon: b.coupon_code ? { code: b.coupon_code, amount: b.coupon_discount } : null,
+    total: b.amount,
+    tax: registered ? gstSplit(b.amount, spa.gst_rate || 18, spa.gstin, null) : null,
+    paid_by: [
+      pkgPart ? { method: 'Prepaid package', amount: pkgPart } : null,
+      giftPart ? { method: 'Gift card', amount: giftPart } : null,
+      !pkgPart && b.payment_mode === 'online' && b.amount - giftPart > 0 ? { method: 'Online (BookMySpa)', amount: round2(b.amount - giftPart) } : null,
+      b.payment_mode === 'pay_at_venue' && b.amount - giftPart > 0 ? { method: `Paid at spa${counter ? ' (' + counter.method + ')' : ''}`, amount: round2(b.amount - giftPart) } : null,
+    ].filter(Boolean),
+    note: registered ? 'Prices include GST.' : 'Supplier is not registered under GST — no tax charged.',
+    facilitator: 'Booked through BookMySpa, an online booking platform acting on behalf of the spa.',
+  };
+  const fy = fyOf(localNow().date), n = nextInvoiceNo(`S${spa.id}`, fy, 4);
+  db.prepare("INSERT INTO invoices (kind, spa_id, booking_id, invoice_no, series, fy, seq, data) VALUES ('customer',?,?,?,?,?,?,?)").run(spa.id, b.id, n.no, `S${spa.id}`, fy, n.seq, JSON.stringify(data));
+  const saved = db.prepare('SELECT * FROM invoices WHERE booking_id = ?').get(b.id);
+  return { ...data, invoice_no: saved.invoice_no, issued_at: saved.issued_at };
+}
+function settlementInvoice(st) {
+  const existing = db.prepare('SELECT * FROM invoices WHERE settlement_id = ?').get(st.id);
+  if (existing) return { ...JSON.parse(existing.data), invoice_no: existing.invoice_no, issued_at: existing.issued_at };
+  const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(st.spa_id);
+  const pg = process.env.PLATFORM_GSTIN && GSTIN_RE.test(process.env.PLATFORM_GSTIN) ? process.env.PLATFORM_GSTIN : null;
+  const data = {
+    kind: 'commission', title: pg ? 'Tax invoice — platform commission' : 'Commission statement',
+    supplier: { name: process.env.PLATFORM_LEGAL_NAME || 'BookMySpa', address: process.env.PLATFORM_ADDRESS || '', gstin: pg },
+    recipient: { name: spa.legal_name || spa.name, trade_name: spa.name, address: fullAddress(spa), gstin: spa.gstin && GSTIN_RE.test(spa.gstin) ? spa.gstin : null },
+    settlement: { id: st.id, date: st.created_at, bookings: st.booking_count, online_gross: st.online_gross, venue_gross: st.venue_gross, reference: st.reference,
+                  result: st.direction === 'payout_to_spa' ? `Paid to spa: ₹${st.amount}` : st.direction === 'collected_from_spa' ? `Collected from spa: ₹${st.amount}` : 'Nothing owed' },
+    lines: [{ description: `Booking platform commission on ${st.booking_count} appointment(s)`, amount: st.commission_total }],
+    total: st.commission_total,
+    tax: pg ? gstSplit(st.commission_total, 18, pg, spa.gstin) : null,
+    note: pg ? 'Commission amount includes GST.' : 'Platform GSTIN not configured — statement only.',
+  };
+  const fy = fyOf(localNow().date), n = nextInvoiceNo('BMS', fy, 5);
+  db.prepare("INSERT INTO invoices (kind, spa_id, settlement_id, invoice_no, series, fy, seq, data) VALUES ('commission',?,?,?,?,?,?,?)").run(spa.id, st.id, n.no, 'BMS', fy, n.seq, JSON.stringify(data));
+  const saved = db.prepare('SELECT * FROM invoices WHERE settlement_id = ?').get(st.id);
+  return { ...data, invoice_no: saved.invoice_no, issued_at: saved.issued_at };
+}
+
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function closureReason(spa, date) {
   const off = String(spa.weekly_off || '').split(',').filter((x) => x !== '').map(Number);
@@ -313,12 +458,38 @@ function appointmentMs(b) { return Date.parse(`${b.booking_date}T${b.start_time}
 function changeDeadlineMs(b, spa) { return appointmentMs(b) - (spa.cancel_window_hours ?? 4) * 3600000; }
 function withinChangeWindow(b, spa) { return b.status === 'pending_payment' || Date.now() <= changeDeadlineMs(b, spa); }
 
+function validateTherapist(b, spaId, skipServices = false) {
+  if (!b.name || String(b.name).trim().length < 2) return 'Enter the therapist’s name.';
+  if (!['female', 'male', 'other'].includes(b.gender)) return 'Choose a gender.';
+  if (!skipServices) {
+    if (!Array.isArray(b.service_ids) || !b.service_ids.length) return 'Choose at least one service this therapist performs.';
+    for (const sid of b.service_ids) if (!db.prepare('SELECT 1 FROM services WHERE id = ? AND spa_id = ?').get(sid, spaId)) return 'Choose services from this spa.';
+  }
+  return null;
+}
+function setTherapistServices(tid, ids) {
+  db.prepare('DELETE FROM therapist_services WHERE therapist_id = ?').run(tid);
+  for (const sid of [...new Set(ids.map(Number))]) db.prepare('INSERT INTO therapist_services (therapist_id, service_id) VALUES (?,?)').run(tid, sid);
+}
+function validatePackage(b, spaId) {
+  if (!b.name || String(b.name).trim().length < 3) return 'Give the package a name.';
+  if (!db.prepare('SELECT 1 FROM services WHERE id = ? AND spa_id = ?').get(b.service_id, spaId)) return 'Choose a service from this spa.';
+  const n = Number(b.sessions), price = Number(b.price), days = Number(b.validity_days ?? 180);
+  if (!Number.isInteger(n) || n < 2 || n > 50) return 'Sessions must be between 2 and 50.';
+  if (!(price > 0 && price <= 1000000)) return 'Enter a valid package price.';
+  if (!Number.isInteger(days) || days < 30 || days > 730) return 'Validity must be between 30 and 730 days.';
+  return null;
+}
+
 function getAvailableSlots(spa, service, date, opts = {}) {
   cleanupStaleBookings();
   if (closureReason(spa, date)) return [];
   const excludeId = opts.excludeBookingId || -1;
   const blocks = db.prepare('SELECT room_type_id, start_time, end_time, qty FROM slot_blocks WHERE spa_id = ? AND date = ?').all(spa.id, date)
     .filter((bl) => bl.room_type_id === null || (service.room_type_id && bl.room_type_id === service.room_type_id));
+  const hasTherapists = therapistsForService(service.id).length > 0;
+  const eligible = hasTherapists ? eligibleTherapists(service.id, opts) : [];
+  const tBookings = hasTherapists ? therapistBookings(spa.id, date, excludeId) : [];
   const openMin = timeToMinutes(spa.opening_time);
   const closeMin = timeToMinutes(spa.closing_time);
   const duration = service.duration_minutes;
@@ -365,7 +536,10 @@ function getAvailableSlots(spa, service, date, opts = {}) {
     }
 
     const spotsLeft = wholeSpa ? 0 : Math.max(0, capacity - overlapCount - blocked);
-    slots.push({ start_time: minutesToTime(start), end_time: minutesToTime(end), available: spotsLeft > 0, spots_left: spotsLeft, capacity });
+    const freeTherapists = hasTherapists
+      ? eligible.filter((t) => !tBookings.some((b) => b.therapist_id === t.id && start < timeToMinutes(b.end_time) && end > timeToMinutes(b.start_time))).length
+      : null;
+    slots.push({ start_time: minutesToTime(start), end_time: minutesToTime(end), available: spotsLeft > 0 && freeTherapists !== 0, spots_left: spotsLeft, capacity, therapists_free: freeTherapists });
   }
   return slots;
 }
@@ -458,6 +632,8 @@ async function handleApi(req, res, pathname, query) {
       if (event.event === 'payment.captured' || event.event === 'order.paid') {
         const receipt = event.payload?.order?.entity?.receipt || event.payload?.payment?.entity?.notes?.receipt;
         const paymentEntity = event.payload?.payment?.entity;
+        const purchaseMatch = /^purchase_(\d+)$/.exec(receipt || '');
+        if (purchaseMatch) activatePurchase(Number(purchaseMatch[1]), paymentEntity && paymentEntity.id);
         const bookingIdMatch = /^booking_(\d+)$/.exec(receipt || '');
         if (bookingIdMatch) {
           const bookingId = Number(bookingIdMatch[1]);
@@ -487,7 +663,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'config' && req.method === 'GET') {
-      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION });
+      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', routePayouts: gateway.isLive && process.env.RAZORPAY_ROUTE === 'on', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION });
     }
 
     // ---------------- FORGOT PASSWORD (SMS code to the registered mobile) ----------------
@@ -744,7 +920,11 @@ async function handleApi(req, res, pathname, query) {
          WHERE sv.spa_id = ? AND sv.active = 1`
       ).all(spa.id).map(withDiscount);
       const media = db.prepare('SELECT id, type, url, is_cover FROM spa_media WHERE spa_id = ? ORDER BY is_cover DESC, created_at ASC').all(spa.id);
-      return sendJSON(res, 200, { spa: publicSpa(spa), services, media });
+      const therapists = db.prepare('SELECT id, name, gender, bio FROM therapists WHERE spa_id = ? AND active = 1 ORDER BY name').all(spa.id)
+        .map((t) => ({ ...t, service_ids: db.prepare('SELECT service_id FROM therapist_services WHERE therapist_id = ?').all(t.id).map((r) => r.service_id) }));
+      const packages = db.prepare(`SELECT p.*, sv.name AS service_name, sv.duration_minutes FROM packages p JOIN services sv ON sv.id = p.service_id
+                                   WHERE p.spa_id = ? AND p.active = 1 AND sv.active = 1 ORDER BY p.price`).all(spa.id);
+      return sendJSON(res, 200, { spa: publicSpa(spa), services, media, therapists, packages });
     }
 
     if (parts[1] === 'spas' && parts[3] === 'slots' && req.method === 'GET') {
@@ -757,7 +937,7 @@ async function handleApi(req, res, pathname, query) {
       if (dateErr) return sendJSON(res, 400, { error: dateErr });
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spa.id);
       if (!service) return sendJSON(res, 404, { error: 'Service not found for this spa.' });
-      const slots = getAvailableSlots(spa, service, date);
+      const slots = getAvailableSlots(spa, service, date, therapistOpts({ therapistId: query.get('therapistId'), gender: query.get('gender') }));
       return sendJSON(res, 200, { slots, closed: closureReason(spa, date) });
     }
 
@@ -806,74 +986,87 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       const body = await parseBody(req);
       const { spaId, serviceId, date, startTime, couponCode } = body;
-      const paymentMode = body.paymentMode === 'pay_at_venue' ? 'pay_at_venue' : 'online';
-      const notifyChannel = ['email', 'sms', 'whatsapp'].includes(body.notifyChannel) ? body.notifyChannel : 'email';
+      let paymentMode = body.paymentMode === 'pay_at_venue' ? 'pay_at_venue' : 'online';
+      const topts = therapistOpts(body);
 
       const dateErr = validateBookingDate(date);
       if (dateErr) return sendJSON(res, 400, { error: dateErr });
-      if (paymentMode === 'online' && !onlinePaymentsAvailable()) {
-        return sendJSON(res, 400, { error: "Online payment isn't available yet — please choose Pay at the spa." });
-      }
       const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(spaId);
       const service = db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(serviceId, spaId);
       if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
-      if (paymentMode === 'pay_at_venue' && spa.allow_pay_at_venue === 0) {
-        return sendJSON(res, 400, { error: 'This spa requires online payment to confirm a booking.' });
+
+      // A prepaid package session for this exact service
+      let pkg = null;
+      if (body.customerPackageId) {
+        pkg = db.prepare("SELECT * FROM customer_packages WHERE id = ? AND customer_id = ? AND status = 'active'").get(body.customerPackageId, user.id);
+        if (!pkg || pkg.spa_id !== spa.id || pkg.service_id !== service.id) return sendJSON(res, 400, { error: 'That package can’t be used for this service.' });
+        if (pkg.sessions_used >= pkg.sessions_total) return sendJSON(res, 400, { error: 'There are no sessions left in this package.' });
+        if (pkg.expires_at && pkg.expires_at < date) return sendJSON(res, 400, { error: `This package is valid until ${pkg.expires_at}.` });
+        if (couponCode || body.giftCardCode) return sendJSON(res, 400, { error: 'Coupons and gift cards can’t be combined with a package session.' });
       }
 
-      const slots = getAvailableSlots(spa, service, date);
-      const chosen = slots.find((s) => s.start_time === startTime);
+      const slots = getAvailableSlots(spa, service, date, topts);
+      const chosen = slots.find((x) => x.start_time === startTime);
       if (!chosen || !chosen.available) return sendJSON(res, 409, { error: 'That slot is no longer available. Please pick another.' });
-
-      const baseAmount = withDiscount(service).final_price;
-      let finalAmount = baseAmount;
-      let couponDiscount = 0;
-      let appliedCode = null;
-      if (couponCode) {
-        const result = findCoupon(spaId, couponCode, serviceId, date, chosen.start_time);
-        if (result.error) return sendJSON(res, 400, { error: result.error });
-        const applied = applyCoupon(baseAmount, result.coupon);
-        finalAmount = applied.finalAmount;
-        couponDiscount = applied.discountAmount;
-        appliedCode = result.coupon.code;
+      let therapist = null;
+      if (therapistsForService(service.id).length) {
+        therapist = pickTherapist(spa.id, service.id, date, chosen.start_time, chosen.end_time, topts);
+        if (!therapist) return sendJSON(res, 409, { error: 'No therapist matching your choice is free then. Please pick another time.' });
       }
 
-      if (paymentMode === 'pay_at_venue') {
-        // No online charge — the slot is reserved and the booking is confirmed
-        // immediately; the spa collects cash/card/UPI in person and the owner
-        // marks it paid afterward from their dashboard.
-        const info = db.prepare(
-          `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
-           VALUES (?,?,?,?,?,?,?,?,?,'confirmed','unpaid','pay_at_venue')`
-        ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
-      applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
-      assignBookingRef(Number(info.lastInsertRowid));
-
-        if (appliedCode) {
-          db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(spaId, appliedCode);
+      let finalAmount, couponDiscount = 0, appliedCode = null;
+      if (pkg) finalAmount = pkg.per_session_value;
+      else {
+        finalAmount = withDiscount(service).final_price;
+        if (couponCode) {
+          const result = findCoupon(spaId, couponCode, serviceId, date, chosen.start_time);
+          if (result.error) return sendJSON(res, 400, { error: result.error });
+          const applied = applyCoupon(finalAmount, result.coupon);
+          couponDiscount = applied.discountAmount; finalAmount = applied.finalAmount; appliedCode = result.coupon.code;
         }
-
-        let booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
-        let notification = null;
-        try {
-          const customer = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
-          notification = await notifier.sendBookingConfirmations({ booking, customer, spa, service });
-          booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(booking.id);
-        } catch (e) {
-          notification = { status: 'failed', detail: e.message };
-        }
-        return sendJSON(res, 201, { booking, notification, message: `Booking confirmed. Pay ₹${finalAmount.toLocaleString('en-IN')} at the spa.` });
       }
+      let gift = null, giftAmount = 0;
+      if (!pkg && body.giftCardCode) {
+        gift = findGiftCard(body.giftCardCode);
+        if (gift.error) return sendJSON(res, 400, { error: gift.error });
+        giftAmount = round2(Math.min(gift.card.balance, finalAmount));
+      }
+      const due = round2(finalAmount - giftAmount);
+      const prepaid = !!pkg || due <= 0;
+      if (prepaid) paymentMode = 'online';
+      else if (paymentMode === 'online' && !onlinePaymentsAvailable()) return sendJSON(res, 400, { error: "Online payment isn't available yet — please choose Pay at the spa." });
+      else if (paymentMode === 'pay_at_venue' && spa.allow_pay_at_venue === 0) return sendJSON(res, 400, { error: 'This spa requires online payment to confirm a booking.' });
+      const status = prepaid || paymentMode === 'pay_at_venue' ? 'confirmed' : 'pending_payment';
 
       const info = db.prepare(
-        `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode)
-         VALUES (?,?,?,?,?,?,?,?,?,'pending_payment','unpaid','online')`
-      ).run(user.id, spaId, serviceId, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount);
-      applyCommission(Number(info.lastInsertRowid), spa, finalAmount);
-      assignBookingRef(Number(info.lastInsertRowid));
+        `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode,
+                               therapist_id, therapist_choice, giftcard_amount, gift_card_id, customer_package_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).run(user.id, spa.id, service.id, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount, status, prepaid ? 'paid' : 'unpaid', paymentMode,
+            therapist ? therapist.id : null, therapist ? (topts.therapistId ? 'specific' : topts.gender || 'any') : null, giftAmount, gift ? gift.card.id : null, pkg ? pkg.id : null);
+      const bookingId = Number(info.lastInsertRowid);
+      applyCommission(bookingId, spa, finalAmount);
+      assignBookingRef(bookingId);
+      if (giftAmount > 0) {
+        db.prepare('UPDATE gift_cards SET balance = balance - ? WHERE id = ?').run(giftAmount, gift.card.id);
+        db.prepare("INSERT INTO gift_card_uses (gift_card_id, booking_id, amount, kind) VALUES (?,?,?,'redeem')").run(gift.card.id, bookingId, giftAmount);
+      }
+      if (pkg) db.prepare('UPDATE customer_packages SET sessions_used = sessions_used + 1 WHERE id = ?').run(pkg.id);
+      if (appliedCode && status === 'confirmed') db.prepare('UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE').run(spa.id, appliedCode);
 
-      const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(info.lastInsertRowid);
-      return sendJSON(res, 201, { booking, message: 'Slot held. Complete payment within 10 minutes to confirm.' });
+      let booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+      let notification = null;
+      if (status === 'confirmed') {
+        try {
+          notification = await notifier.sendBookingConfirmations({ booking, customer: db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), spa, service });
+          booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+        } catch (e) { notification = { status: 'failed', detail: e.message }; }
+      }
+      const message = pkg ? `Booking confirmed with your package — ${pkg.sessions_total - pkg.sessions_used - 1} session(s) left.`
+        : prepaid ? 'Booking confirmed — fully paid with your gift card.'
+        : paymentMode === 'pay_at_venue' ? `Booking confirmed. Pay ₹${due.toLocaleString('en-IN')} at the spa.${giftAmount ? ` (₹${giftAmount} paid by gift card)` : ''}`
+        : 'Slot held. Complete payment within 10 minutes to confirm.';
+      return sendJSON(res, 201, { booking, notification, message, due, therapist: therapist ? { id: therapist.id, name: therapist.name } : null });
     }
 
     if (parts[1] === 'bookings' && parts[2] === 'me' && req.method === 'GET') {
@@ -881,7 +1074,7 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       cleanupStaleBookings();
       const rows = db.prepare(
-        `SELECT b.*, s.name as spa_name, s.city as spa_city, sv.name as service_name, r.rating AS my_rating, r.comment AS my_comment
+        `SELECT b.*, s.name as spa_name, s.city as spa_city, sv.name as service_name, r.rating AS my_rating, r.comment AS my_comment, (SELECT name FROM therapists WHERE id = b.therapist_id) AS therapist_name
          FROM bookings b
          JOIN spas s ON s.id = b.spa_id
          JOIN services sv ON sv.id = b.service_id
@@ -911,7 +1104,11 @@ async function handleApi(req, res, pathname, query) {
       if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: "Online payment isn't available yet." });
 
       try {
-        const order = await gateway.createOrder({ amount: booking.amount, bookingId: booking.id });
+        const bspa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
+        const transfers = routeTransfersFor(booking, bspa);
+        const order = await gateway.createOrder({ amount: round2(booking.amount - (booking.giftcard_amount || 0)), bookingId: booking.id, transfers,
+          notes: transfers.length ? { booking_ref: booking.booking_ref || String(booking.id) } : undefined });
+        db.prepare('UPDATE bookings SET route_transfer = ? WHERE id = ?').run(transfers.length ? 1 : 0, booking.id);
         const customer = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
         return sendJSON(res, 200, {
           ...order,
@@ -942,7 +1139,7 @@ async function handleApi(req, res, pathname, query) {
       });
 
       db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)')
-        .run(booking.id, booking.amount, body.method || 'razorpay', result.success ? 'success' : 'failed', result.transactionRef);
+        .run(booking.id, round2(booking.amount - (booking.giftcard_amount || 0)), body.method || 'razorpay', result.success ? 'success' : 'failed', result.transactionRef);
 
       let notification = null;
       if (result.success) {
@@ -985,13 +1182,20 @@ async function handleApi(req, res, pathname, query) {
       const date = req.method === 'GET' ? query.get('date') : body.date;
       const dateErr = validateBookingDate(date);
       if (dateErr) return sendJSON(res, 400, { error: dateErr });
-      const slots = getAvailableSlots(spa, service, date, { excludeBookingId: booking.id });
+      const topts = booking.therapist_choice === 'specific' ? { therapistId: booking.therapist_id } : ['female', 'male'].includes(booking.therapist_choice) ? { gender: booking.therapist_choice } : {};
+      const slots = getAvailableSlots(spa, service, date, { excludeBookingId: booking.id, ...topts });
       if (req.method === 'GET') return sendJSON(res, 200, { slots, closed: closureReason(spa, date) });
       const chosen = slots.find((x) => x.start_time === body.startTime);
       if (!chosen || !chosen.available) return sendJSON(res, 409, { error: 'That time is no longer available. Please pick another.' });
       if (date === booking.booking_date && chosen.start_time === booking.start_time) return sendJSON(res, 400, { error: 'That is already your booking time.' });
-      db.prepare('UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, rescheduled_count = rescheduled_count + 1, reminder_sent = 0 WHERE id = ?')
-        .run(date, chosen.start_time, chosen.end_time, booking.id);
+      let tId = booking.therapist_id;
+      if (therapistsForService(service.id).length) {
+        const t = pickTherapist(spa.id, service.id, date, chosen.start_time, chosen.end_time, topts, booking.id);
+        if (!t) return sendJSON(res, 409, { error: 'No matching therapist is free then. Please pick another time.' });
+        tId = t.id;
+      }
+      db.prepare('UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, therapist_id = ?, rescheduled_count = rescheduled_count + 1, reminder_sent = 0 WHERE id = ?')
+        .run(date, chosen.start_time, chosen.end_time, tId, booking.id);
       const updated = db.prepare('SELECT * FROM bookings WHERE id = ?').get(booking.id);
       try { await notifier.sendBookingConfirmations({ booking: updated, customer: db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), spa, service }); } catch { /* non-fatal */ }
       return sendJSON(res, 200, { message: 'Booking rescheduled. A new confirmation is on its way.', booking: updated });
@@ -1055,20 +1259,17 @@ async function handleApi(req, res, pathname, query) {
 
       let refundMessage = '';
       let paymentStatus = booking.payment_status;
-      if (booking.payment_status === 'paid') {
-        const payment = db.prepare("SELECT * FROM payments WHERE booking_id = ? AND status = 'success' ORDER BY id DESC LIMIT 1").get(booking.id);
-        if (payment) {
-          const refundResult = await gateway.refund({ transactionRef: payment.transaction_ref, amount: booking.amount });
-          if (refundResult.success) {
-            paymentStatus = 'refunded';
-            refundMessage = ' Refund initiated.';
-          } else {
-            refundMessage = ' Refund could not be processed automatically — please refund manually via your payment provider dashboard.';
-          }
-        } else {
-          paymentStatus = 'refunded';
-          refundMessage = ' Refund initiated.';
-        }
+      const payment = booking.payment_status === 'paid'
+        ? db.prepare("SELECT * FROM payments WHERE booking_id = ? AND status = 'success' AND transaction_ref NOT LIKE 'COUNTER_%' ORDER BY id DESC LIMIT 1").get(booking.id) : null;
+      if (payment && payment.amount > 0) {
+        const refundResult = await gateway.refund({ transactionRef: payment.transaction_ref, amount: payment.amount, reverseAll: !!booking.route_transfer });
+        if (refundResult.success) { paymentStatus = 'refunded'; refundMessage = ` ₹${payment.amount} refund initiated.`; }
+        else refundMessage = ' The online refund could not be processed automatically — our team will refund you manually.';
+      } else if (booking.payment_status === 'paid') paymentStatus = 'refunded';
+      if (booking.gift_card_id && booking.giftcard_amount > 0) { restoreGift(booking); refundMessage += ` ₹${booking.giftcard_amount} returned to your gift card.`; }
+      if (booking.customer_package_id) {
+        db.prepare('UPDATE customer_packages SET sessions_used = MAX(0, sessions_used - 1) WHERE id = ?').run(booking.customer_package_id);
+        refundMessage += ' Your package session has been returned.';
       }
       db.prepare("UPDATE bookings SET status='cancelled', payment_status=? WHERE id = ?").run(paymentStatus, booking.id);
       return sendJSON(res, 200, { message: 'Booking cancelled.' + refundMessage });
@@ -1133,7 +1334,13 @@ async function handleApi(req, res, pathname, query) {
       }
       const newOpen = body.opening_time ?? spa.opening_time, newClose = body.closing_time ?? spa.closing_time;
       if (!/^\d{2}:\d{2}$/.test(newOpen) || !/^\d{2}:\d{2}$/.test(newClose) || newOpen >= newClose) return sendJSON(res, 400, { error: 'Closing time must be after opening time.' });
-      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude', 'weekly_off', 'cancel_window_hours'];
+      if (body.gstin !== undefined) {
+        body.gstin = String(body.gstin || '').trim().toUpperCase() || null;
+        if (body.gstin && !GSTIN_RE.test(body.gstin)) return sendJSON(res, 400, { error: 'That GSTIN doesn’t look right — it has 15 characters, like 36ABCDE1234F1Z5.' });
+      }
+      if (body.gst_rate !== undefined && ![5, 12, 18].includes(Number(body.gst_rate))) return sendJSON(res, 400, { error: 'GST rate must be 5%, 12% or 18%.' });
+      if (body.gst_rate !== undefined) body.gst_rate = Number(body.gst_rate);
+      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude', 'weekly_off', 'cancel_window_hours', 'legal_name', 'gstin', 'gst_rate'];
       const updates = [];
       const args = [];
       for (const f of fields) {
@@ -1454,7 +1661,7 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       cleanupStaleBookings();
       const rows = db.prepare(
-        `SELECT b.*, s.name as spa_name, sv.name as service_name, u.name as customer_name, u.phone as customer_phone
+        `SELECT b.*, s.name as spa_name, sv.name as service_name, u.name as customer_name, u.phone as customer_phone, (SELECT name FROM therapists WHERE id = b.therapist_id) AS therapist_name
          FROM bookings b
          JOIN spas s ON s.id = b.spa_id
          JOIN services sv ON sv.id = b.service_id
@@ -1651,7 +1858,7 @@ async function handleApi(req, res, pathname, query) {
       if (!isValidDate(date)) return sendJSON(res, 400, { error: 'Invalid date.' });
       const bookings = db.prepare(
         `SELECT b.id, b.booking_ref, b.start_time, b.end_time, b.status, b.payment_mode, b.payment_status, b.amount,
-                sv.name AS service_name, sv.room_type_id, u.name AS customer_name, u.phone AS customer_phone
+                sv.name AS service_name, sv.room_type_id, u.name AS customer_name, u.phone AS customer_phone, (SELECT name FROM therapists WHERE id = b.therapist_id) AS therapist_name
          FROM bookings b JOIN services sv ON sv.id = b.service_id JOIN users u ON u.id = b.customer_id
          WHERE b.spa_id = ? AND b.booking_date = ? AND b.status IN ('pending_payment','confirmed','completed') ORDER BY b.start_time`).all(spa.id, date);
       return sendJSON(res, 200, {
@@ -1701,6 +1908,150 @@ async function handleApi(req, res, pathname, query) {
       if (!bl) return sendJSON(res, 404, { error: 'Not found.' });
       db.prepare('DELETE FROM slot_blocks WHERE id = ?').run(bl.id);
       return sendJSON(res, 200, { message: 'Block removed — those slots are bookable again.' });
+    }
+
+    // ---------------- OWNER: THERAPISTS ----------------
+    if (parts[1] === 'owner' && parts[2] === 'spas' && parts[4] === 'therapists' && ['GET', 'POST'].includes(req.method)) {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      if (req.method === 'GET') {
+        const list = db.prepare('SELECT * FROM therapists WHERE spa_id = ? ORDER BY active DESC, name').all(spa.id)
+          .map((t) => ({ ...t, service_ids: db.prepare('SELECT service_id FROM therapist_services WHERE therapist_id = ?').all(t.id).map((r) => r.service_id),
+                         upcoming: db.prepare("SELECT COUNT(*) c FROM bookings WHERE therapist_id = ? AND booking_date >= ? AND status IN ('confirmed','pending_payment')").get(t.id, localNow().date).c }));
+        return sendJSON(res, 200, { therapists: list });
+      }
+      const body = await parseBody(req);
+      const err = validateTherapist(body, spa.id); if (err) return sendJSON(res, 400, { error: err });
+      const id = Number(db.prepare('INSERT INTO therapists (spa_id, name, gender, bio) VALUES (?,?,?,?)').run(spa.id, body.name.trim(), body.gender, String(body.bio || '').slice(0, 160)).lastInsertRowid);
+      setTherapistServices(id, body.service_ids);
+      return sendJSON(res, 201, { message: 'Therapist added.', id });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'therapists' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const t = db.prepare('SELECT t.* FROM therapists t JOIN spas s ON s.id = t.spa_id WHERE t.id = ? AND s.owner_id = ?').get(parts[3], user.id);
+      if (!t) return sendJSON(res, 404, { error: 'Therapist not found.' });
+      const body = await parseBody(req);
+      const merged = { name: body.name ?? t.name, gender: body.gender ?? t.gender, service_ids: body.service_ids ?? [] };
+      const err = validateTherapist(merged, t.spa_id, body.service_ids === undefined); if (err) return sendJSON(res, 400, { error: err });
+      db.prepare('UPDATE therapists SET name = ?, gender = ?, bio = ?, active = ? WHERE id = ?')
+        .run(String(merged.name).trim(), merged.gender, body.bio !== undefined ? String(body.bio).slice(0, 160) : t.bio, body.active !== undefined ? (body.active ? 1 : 0) : t.active, t.id);
+      if (body.service_ids !== undefined) setTherapistServices(t.id, body.service_ids);
+      const upcoming = db.prepare("SELECT COUNT(*) c FROM bookings WHERE therapist_id = ? AND booking_date >= ? AND status IN ('confirmed','pending_payment')").get(t.id, localNow().date).c;
+      return sendJSON(res, 200, { message: body.active === false && upcoming ? `Saved. ${upcoming} upcoming booking(s) are still assigned to ${t.name} — reassign or contact those customers.` : 'Saved.' });
+    }
+
+    // ---------------- OWNER: PACKAGES ----------------
+    if (parts[1] === 'owner' && parts[2] === 'spas' && parts[4] === 'packages' && ['GET', 'POST'].includes(req.method)) {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const spa = db.prepare('SELECT * FROM spas WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!spa) return sendJSON(res, 404, { error: 'Spa not found.' });
+      if (req.method === 'GET') {
+        return sendJSON(res, 200, { packages: db.prepare(`SELECT p.*, sv.name AS service_name, sv.price AS service_price,
+          (SELECT COUNT(*) FROM customer_packages cp WHERE cp.package_id = p.id AND cp.status = 'active') AS sold
+          FROM packages p JOIN services sv ON sv.id = p.service_id WHERE p.spa_id = ? ORDER BY p.created_at DESC`).all(spa.id) });
+      }
+      const body = await parseBody(req);
+      const err = validatePackage(body, spa.id); if (err) return sendJSON(res, 400, { error: err });
+      db.prepare('INSERT INTO packages (spa_id, service_id, name, sessions, price, validity_days) VALUES (?,?,?,?,?,?)')
+        .run(spa.id, Number(body.service_id), String(body.name).trim(), Number(body.sessions), Number(body.price), Number(body.validity_days || 180));
+      return sendJSON(res, 201, { message: 'Package created — customers can buy it from your spa page.' });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'packages' && parts.length === 4 && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const p = db.prepare('SELECT p.* FROM packages p JOIN spas s ON s.id = p.spa_id WHERE p.id = ? AND s.owner_id = ?').get(parts[3], user.id);
+      if (!p) return sendJSON(res, 404, { error: 'Package not found.' });
+      const body = await parseBody(req);
+      const merged = { ...p, ...body };
+      const err = validatePackage(merged, p.spa_id); if (err) return sendJSON(res, 400, { error: err });
+      db.prepare('UPDATE packages SET name = ?, sessions = ?, price = ?, validity_days = ?, active = ? WHERE id = ?')
+        .run(String(merged.name).trim(), Number(merged.sessions), Number(merged.price), Number(merged.validity_days), merged.active ? 1 : 0, p.id);
+      return sendJSON(res, 200, { message: 'Package saved. Packages already bought keep their original terms.' });
+    }
+
+    // ---------------- CUSTOMER: GIFT CARDS, PACKAGES, WALLET ----------------
+    if (parts[1] === 'giftcards' && parts.length === 2 && req.method === 'POST') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: 'Gift cards can be bought once online payments are switched on.' });
+      const body = await parseBody(req);
+      const amount = Number(body.amount);
+      if (!(Number.isInteger(amount) && amount >= 500 && amount <= 50000)) return sendJSON(res, 400, { error: 'Choose an amount between ₹500 and ₹50,000.' });
+      const gid = Number(db.prepare('INSERT INTO gift_cards (amount, balance, purchaser_id, recipient_name, message) VALUES (?,?,?,?,?)')
+        .run(amount, amount, user.id, String(body.recipient_name || '').slice(0, 60), String(body.message || '').slice(0, 200)).lastInsertRowid);
+      const pid = Number(db.prepare("INSERT INTO purchases (customer_id, kind, ref_id, amount) VALUES (?, 'giftcard', ?, ?)").run(user.id, gid, amount).lastInsertRowid);
+      return sendJSON(res, 201, { purchaseId: pid, amount });
+    }
+    if (parts[1] === 'packages' && parts[3] === 'buy' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: 'Packages can be bought once online payments are switched on.' });
+      const pk = db.prepare(`SELECT p.*, s.status AS spa_status, s.suspended FROM packages p JOIN spas s ON s.id = p.spa_id JOIN services sv ON sv.id = p.service_id
+                             WHERE p.id = ? AND p.active = 1 AND sv.active = 1`).get(parts[2]);
+      if (!pk || pk.spa_status !== 'approved' || pk.suspended) return sendJSON(res, 404, { error: 'This package isn’t available.' });
+      const cpid = Number(db.prepare('INSERT INTO customer_packages (package_id, customer_id, spa_id, service_id, name, sessions_total, per_session_value, price_paid) VALUES (?,?,?,?,?,?,?,?)')
+        .run(pk.id, user.id, pk.spa_id, pk.service_id, pk.name, pk.sessions, round2(pk.price / pk.sessions), pk.price).lastInsertRowid);
+      const pid = Number(db.prepare("INSERT INTO purchases (customer_id, kind, ref_id, amount) VALUES (?, 'package', ?, ?)").run(user.id, cpid, pk.price).lastInsertRowid);
+      return sendJSON(res, 201, { purchaseId: pid, amount: pk.price });
+    }
+    if (parts[1] === 'purchases' && ['checkout', 'verify'].includes(parts[3]) && req.method === 'POST') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      const p = db.prepare('SELECT * FROM purchases WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
+      if (!p) return sendJSON(res, 404, { error: 'Purchase not found.' });
+      if (p.status === 'paid') return sendJSON(res, 409, { error: 'This purchase is already paid.' });
+      if (parts[3] === 'checkout') {
+        try {
+          const order = await gateway.createOrder({ amount: p.amount, receipt: `purchase_${p.id}` });
+          const cu = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+          return sendJSON(res, 200, { ...order, purchaseId: p.id, prefill: { name: cu.name, email: cu.email, contact: cu.phone } });
+        } catch (e) { return sendJSON(res, 502, { error: 'Could not start checkout: ' + e.message }); }
+      }
+      const body = await parseBody(req);
+      const result = gateway.verifyPayment({ mode: body.mode, orderId: body.orderId, paymentId: body.paymentId, signature: body.signature });
+      if (!result.success) { db.prepare("UPDATE purchases SET status = 'failed' WHERE id = ? AND status = 'pending'").run(p.id); return sendJSON(res, 402, { success: false, message: result.message }); }
+      activatePurchase(p.id, result.transactionRef);
+      if (p.kind === 'giftcard') {
+        const gc = db.prepare('SELECT * FROM gift_cards WHERE id = ?').get(p.ref_id);
+        return sendJSON(res, 200, { success: true, message: 'Gift card ready to share.', giftCard: { code: gc.code, amount: gc.amount, expires_at: gc.expires_at, recipient_name: gc.recipient_name } });
+      }
+      return sendJSON(res, 200, { success: true, message: 'Package bought — book your first session any time.', package: db.prepare('SELECT * FROM customer_packages WHERE id = ?').get(p.ref_id) });
+    }
+    if (parts[1] === 'wallet' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      const giftCards = db.prepare("SELECT id, code, amount, balance, recipient_name, message, expires_at, created_at FROM gift_cards WHERE purchaser_id = ? AND status = 'active' ORDER BY id DESC").all(user.id);
+      const packages = db.prepare(`SELECT cp.*, s.name AS spa_name, sv.name AS service_name FROM customer_packages cp JOIN spas s ON s.id = cp.spa_id JOIN services sv ON sv.id = cp.service_id
+                                   WHERE cp.customer_id = ? AND cp.status = 'active' ORDER BY cp.id DESC`).all(user.id);
+      return sendJSON(res, 200, { giftCards, packages, onlinePayments: onlinePaymentsAvailable() });
+    }
+    if (parts[1] === 'giftcards' && parts[2] === 'check' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      if (!checkRateLimit(req, { keyPrefix: 'gift_check', maxRequests: 30, windowMs: 15 * 60 * 1000 })) return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes.' });
+      const r = findGiftCard(query.get('code'));
+      return r.error ? sendJSON(res, 200, { valid: false, error: r.error }) : sendJSON(res, 200, { valid: true, balance: r.card.balance, expires_at: r.card.expires_at });
+    }
+
+    // ---------------- INVOICES ----------------
+    if (parts[1] === 'bookings' && parts[3] === 'invoice' && req.method === 'GET') {
+      const user = requireAuth(req, res);
+      if (!user) return;
+      const b = db.prepare('SELECT b.*, s.owner_id FROM bookings b JOIN spas s ON s.id = b.spa_id WHERE b.id = ?').get(parts[2]);
+      if (!b || (user.role === 'customer' && b.customer_id !== user.id) || (user.role === 'owner' && b.owner_id !== user.id)) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (b.payment_status !== 'paid') return sendJSON(res, 409, { error: 'The invoice is available once the booking is paid.' });
+      return sendJSON(res, 200, { invoice: bookingInvoice(b) });
+    }
+    if (parts[1] === 'settlements' && parts[3] === 'invoice' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner', 'admin']);
+      if (!user) return;
+      const st = db.prepare('SELECT st.*, s.owner_id FROM settlements st JOIN spas s ON s.id = st.spa_id WHERE st.id = ?').get(parts[2]);
+      if (!st || (user.role === 'owner' && st.owner_id !== user.id)) return sendJSON(res, 404, { error: 'Settlement not found.' });
+      return sendJSON(res, 200, { invoice: settlementInvoice(st) });
     }
 
     // ---------------- ADMIN: EDIT / DEACTIVATE ----------------
@@ -1789,7 +2140,7 @@ async function handleApi(req, res, pathname, query) {
       const rows = spas.map((s) => {
         const sum = settlementSummary(s.id); delete sum.bookingIds;
         return { spa_id: s.id, spa_name: s.name, owner_name: s.owner_name, owner_phone: s.owner_phone, commission_percent: commissionRateFor(s),
-                 custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), ...sum };
+                 custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), payout_account: s.razorpay_account_id || null, ...sum };
       });
       const history = db.prepare(`SELECT st.*, s.name AS spa_name FROM settlements st JOIN spas s ON s.id = st.spa_id ORDER BY st.created_at DESC LIMIT 100`).all();
       return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION });
@@ -1829,6 +2180,11 @@ async function handleApi(req, res, pathname, query) {
         const v = body.commission_percent === null || body.commission_percent === '' ? null : Number(body.commission_percent);
         if (v !== null && !(v >= 0 && v <= 50)) return sendJSON(res, 400, { error: 'Commission must be between 0% and 50%.' });
         db.prepare('UPDATE spas SET commission_percent = ? WHERE id = ?').run(v, spa.id);
+      }
+      if (body.razorpay_account_id !== undefined) {
+        const acc = String(body.razorpay_account_id || '').trim();
+        if (acc && !/^acc_[A-Za-z0-9]{14}$/.test(acc)) return sendJSON(res, 400, { error: 'Razorpay linked account IDs look like acc_XXXXXXXXXXXXXX (14 characters after acc_).' });
+        db.prepare('UPDATE spas SET razorpay_account_id = ? WHERE id = ?').run(acc || null, spa.id);
       }
       if (body.allow_pay_at_venue !== undefined) {
         db.prepare('UPDATE spas SET allow_pay_at_venue = ? WHERE id = ?').run(body.allow_pay_at_venue ? 1 : 0, spa.id);
@@ -1999,6 +2355,8 @@ async function handleApi(req, res, pathname, query) {
                    lastOffsiteAt: st.lastOffsite ? st.lastOffsite.at : null, lastOffsiteError: st.lastOffsiteError ? st.lastOffsiteError.message : null,
                    lastError: st.lastError ? st.lastError.message : null, restoreError: st.restoreError ? st.restoreError.message : null };
         })(),
+        giftCardLiability: round2(db.prepare("SELECT COALESCE(SUM(balance),0) v FROM gift_cards WHERE status = 'active'").get().v),
+        packageLiability: round2(db.prepare("SELECT COALESCE(SUM((sessions_total - sessions_used) * per_session_value),0) v FROM customer_packages WHERE status = 'active'").get().v),
         featuredRevenue: round2(db.prepare('SELECT COALESCE(SUM(amount),0) a FROM featured_placements WHERE cancelled = 0').get().a),
         activeFeatured: db.prepare('SELECT COUNT(DISTINCT spa_id) c FROM featured_placements WHERE cancelled = 0 AND starts_on <= ? AND ends_on >= ?').get(localNow().date, localNow().date).c });
     }

@@ -44,6 +44,7 @@
 </div>
 
 <div class="wrap" style="padding-bottom:40px">
+  <div id="packagesWrap" style="display:none;margin-bottom:18px"></div>
   <div id="reviewsWrap" style="display:none"><div class="panel" id="reviews"></div></div>
   <div id="spaLocation" style="margin-top:18px"></div>
 </div>
@@ -57,6 +58,7 @@ const spaId = new URLSearchParams(window.location.search).get('id');
 let spaData = null, servicesData = [];
 let selectedServiceId = null, selectedDate = null, selectedSlot = null;
 let appliedCoupon = null;
+let therapistsData = [], packagesData = [], tChoice = { therapistId: null, gender: null }, appliedGift = null, usePackage = null;
 let paymentMode = 'online';
 
 function setPaymentMode(mode) {
@@ -81,7 +83,8 @@ function dateOptions() {
 
 async function loadSpa() {
   try {
-    const { spa, services, media } = await API.get('/spas/' + spaId);
+    const { spa, services, media, therapists, packages } = await API.get('/spas/' + spaId);
+    therapistsData = therapists || []; packagesData = packages || [];
     spaData = spa; servicesData = services;
     document.getElementById('spaHeader').innerHTML = `
       <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
@@ -101,6 +104,7 @@ async function loadSpa() {
     renderLocation(spa);
     loadReviews();
     renderServices();
+    renderPackages();
     document.getElementById('mainContent').style.display = 'grid';
   } catch (e) {
     document.getElementById('spaHeader').innerHTML = `<div class="empty-state"><div class="big">🙁</div><p>${e.message}</p></div>`;
@@ -206,6 +210,7 @@ function renderServices() {
 
 function selectService(id) {
   selectedServiceId = id;
+  tChoice = { therapistId: null, gender: null };
   selectedSlot = null;
   renderServices();
   renderBookingPanel();
@@ -228,6 +233,7 @@ function renderBookingPanel() {
     : `${money(service.price)}`;
   body.innerHTML = `
     <p style="font-size:13.5px;margin-bottom:10px"><strong>${service.name}</strong> · ${priceLine} · ${service.duration_minutes} mins</p>
+    ${therapistChooser(service)}
     <label>Choose a date</label>
     <select id="dateSelect">
       ${dateOptions().map(d => `<option value="${d}" ${d===selectedDate?'selected':''}>${formatDate(d)}</option>`).join('')}
@@ -246,7 +252,7 @@ async function loadSlots() {
   const grid = document.getElementById('slotGrid');
   grid.innerHTML = '<p class="helper-text">Loading times…</p>';
   try {
-    const { slots, closed } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}`);
+    const { slots, closed } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}${tChoice.therapistId ? '&therapistId=' + tChoice.therapistId : tChoice.gender ? '&gender=' + tChoice.gender : ''}`);
     if (!slots.length) {
       grid.innerHTML = `<p class="helper-text">${closed ? esc(closed) + ' — please pick another day.' : 'No times left this day — please pick another day.'}</p>`;
       return;
@@ -254,9 +260,11 @@ async function loadSlots() {
     grid.innerHTML = slots.map(s => `
       <div class="slot ${s.available ? 'available' : 'unavailable'} ${selectedSlot===s.start_time ? 'selected' : ''}"
            ${s.available ? `onclick="pickSlot('${s.start_time}')"` : ''}
-           title="${s.available ? (s.capacity > 1 ? s.spots_left + ' of ' + s.capacity + ' rooms free' : 'Available') : 'Fully booked'}">
+           title="${s.available ? 'Available' : s.therapists_free === 0 && s.spots_left > 0 ? 'No matching therapist free' : 'Fully booked'}">
         ${formatTime(s.start_time)}
-        ${s.capacity > 1 ? `<div style="font-size:10px;font-weight:600;opacity:0.75;margin-top:2px">${s.available ? s.spots_left + ' left' : 'Full'}</div>` : ''}
+        ${(() => { const left = s.therapists_free === null || s.therapists_free === undefined ? s.spots_left : Math.min(s.spots_left, s.therapists_free);
+                   const multi = s.capacity > 1 || (s.therapists_free !== null && s.therapists_free !== undefined);
+                   return multi ? `<div style="font-size:10px;font-weight:600;opacity:0.75;margin-top:2px">${s.available ? left + ' left' : 'Full'}</div>` : ''; })()}
       </div>
     `).join('');
   } catch (e) {
@@ -283,7 +291,7 @@ async function openPayModal() {
     toast('Only customer accounts can book slots.', 'error');
     return;
   }
-  appliedCoupon = null;
+  appliedCoupon = null; appliedGift = null; usePackage = null;
   paymentMode = 'online';
   const onlineOk = (await getConfig()).onlinePayments;
   const service = servicesData.find(s => s.id === selectedServiceId);
@@ -292,12 +300,21 @@ async function openPayModal() {
     <p style="color:var(--ink-soft);font-size:14px;margin-bottom:14px">${spaData.name} · ${service.name}</p>
     <p style="font-size:14px"><strong>${formatDate(selectedDate)}</strong> at <strong>${formatTime(selectedSlot)}</strong></p>
     <div id="priceDisplay"></div>
-    <label>Have a coupon code?</label>
+    <div id="couponRow"><label>Have a coupon code?</label>
     <div style="display:flex;gap:8px">
       <input id="couponInput" placeholder="e.g. WELCOME20" style="text-transform:uppercase">
       <button type="button" class="btn small outline" style="white-space:nowrap" onclick="applyCouponCode()">Apply</button>
     </div>
-    <p class="helper-text" id="couponMsg"></p>
+    <p class="helper-text" id="couponMsg"></p></div>
+    <div id="pkgBox"></div>
+    <div id="giftBox">
+      <label for="giftInput">Gift card</label>
+      <div style="display:flex;gap:8px">
+        <input id="giftInput" placeholder="GIFT-XXXX-XXXX" style="text-transform:uppercase" autocomplete="off">
+        <button type="button" class="btn small outline" style="white-space:nowrap" onclick="applyGift()">Apply</button>
+      </div>
+      <p class="helper-text" id="giftMsg"></p>
+    </div>
     <label style="margin-top:16px">How would you like to pay?</label>
     <div class="role-toggle">
       <button type="button" class="active" id="modeOnlineBtn" onclick="setPaymentMode('online')">💳 Pay online now</button>
@@ -320,6 +337,12 @@ async function openPayModal() {
     <p class="helper-text" style="margin-top:12px">This is a simulated payment gateway for demo purposes. No real money is charged. Confirmation delivery is also simulated in this demo — the message content is real, but nothing is actually sent.</p>
   `;
   renderPriceDisplay(service);
+  try {
+    const { packages: mine } = await API.get('/wallet');
+    const usable = mine.find(p => p.spa_id === Number(spaId) && p.service_id === selectedServiceId && p.sessions_used < p.sessions_total && (!p.expires_at || p.expires_at >= selectedDate));
+    if (usable) document.getElementById('pkgBox').innerHTML = `<label class="pkg-use"><input type="checkbox" id="pkgUse" onchange="usePackage = this.checked ? ${usable.id} : null; renderPriceDisplay(servicesData.find(s => s.id === selectedServiceId))">
+      <span>Use my package <strong>${esc(usable.name)}</strong> — ${usable.sessions_total - usable.sessions_used} session${usable.sessions_total - usable.sessions_used !== 1 ? 's' : ''} left</span></label>`;
+  } catch {}
   if (!onlineOk) {
     document.getElementById('modeOnlineBtn').style.display = 'none';
     setPaymentMode('pay_at_venue');
@@ -353,6 +376,21 @@ function renderPriceDisplay(service) {
       <p class="mono" style="font-size:22px;font-weight:700;color:var(--moss-deep);margin:${baseHadDiscount ? '2px' : '10px'} 0 18px">${money(service.final_price)}${baseHadDiscount ? ` <span style="font-size:13px;font-weight:600;color:var(--gold)">(${service.discount_percent}% off)</span>` : ''}</p>
     `;
   }
+  const base = appliedCoupon && appliedCoupon.valid ? appliedCoupon.final_amount : service.final_price;
+  for (const id of ['couponRow', 'giftBox']) { const n = document.getElementById(id); if (n) n.style.display = usePackage ? 'none' : ''; }
+  if (usePackage) {
+    el.innerHTML = `<p style="font-size:22px;font-weight:700;color:var(--moss-deep);margin:10px 0 2px">Prepaid ✓</p><p class="helper-text" style="margin:0 0 14px">One session from your package will be used — nothing to pay.</p>`;
+  } else if (appliedGift) {
+    const g = Math.min(appliedGift.balance, base), due = Math.max(0, Math.round((base - g) * 100) / 100);
+    el.innerHTML += `<p style="font-size:13.5px;color:var(--moss);font-weight:600;margin:-8px 0 2px">🎁 Gift card −${money(g)}</p><p style="font-size:16px;font-weight:700;margin:0 0 14px">To pay: ${money(due)}${due === 0 ? ' — fully covered' : ''}</p>`;
+  }
+  const covered = !!usePackage || !!(appliedGift && appliedGift.balance >= base);
+  const onlineBtn = document.getElementById('modeOnlineBtn');
+  if (onlineBtn) {
+    const row = onlineBtn.parentElement; row.style.display = covered ? 'none' : '';
+    const lbl = row.previousElementSibling; if (lbl && lbl.tagName === 'LABEL') lbl.style.display = covered ? 'none' : '';
+  }
+  const btn = document.getElementById('confirmPayBtn'); if (btn && covered) btn.textContent = 'Confirm booking';
 }
 
 async function applyCouponCode() {
@@ -384,6 +422,52 @@ async function applyCouponCode() {
 
 function closePayModal() { document.getElementById('payModal').classList.remove('open'); }
 
+function therapistChooser(service) {
+  const list = therapistsData.filter(t => t.service_ids.includes(service.id));
+  if (!list.length) return '';
+  const chip = (label, active, call, title = '') => `<button type="button" class="t-chip ${active ? 'on' : ''}" onclick="${call}" title="${esc(title)}">${label}</button>`;
+  const genders = ['female', 'male'].filter(g => list.some(t => t.gender === g));
+  return `<label>Therapist</label><div class="t-chips">
+    ${chip('Any', !tChoice.therapistId && !tChoice.gender, "setTherapist(null, null)")}
+    ${genders.map(g => chip(g === 'female' ? 'Female' : 'Male', tChoice.gender === g, `setTherapist(null, '${g}')`)).join('')}
+    ${list.map(t => chip(esc(t.name), tChoice.therapistId === t.id, `setTherapist(${t.id}, null)`, t.bio || '')).join('')}
+  </div>`;
+}
+function setTherapist(id, gender) { tChoice = { therapistId: id, gender }; selectedSlot = null; renderBookingPanel(); }
+
+function renderPackages() {
+  const el = document.getElementById('packagesWrap');
+  if (!packagesData.length) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = `<div class="panel"><h3 style="margin-bottom:4px">Packages</h3><p class="helper-text" style="margin:0 0 14px">Buy several sessions upfront and save. Book each session whenever you like.</p>
+    <div class="pkg-grid">${packagesData.map(p => {
+      const sv = servicesData.find(x => x.id === p.service_id), full = sv ? sv.final_price * p.sessions : 0, save = Math.max(0, Math.round(full - p.price));
+      return `<div class="pkg-card"><div><h4>${esc(p.name)}</h4><p class="helper-text" style="margin:2px 0 8px">${p.sessions} × ${esc(p.service_name)} · valid ${p.validity_days} days</p></div>
+        <div><div class="pkg-price">${money(p.price)}</div><div class="helper-text" style="margin:0">${money(Math.round(p.price / p.sessions))} per session${save ? ` · <strong style="color:var(--moss)">save ${money(save)}</strong>` : ''}</div>
+        <button class="btn small gold" style="margin-top:10px" onclick="buyPackage(${p.id}, this)">Buy package</button></div></div>`;
+    }).join('')}</div></div>`;
+}
+async function buyPackage(id, btn) {
+  if (!API.isLoggedIn() || API.user().role !== 'customer') { toast('Log in to buy a package.', 'error'); return setTimeout(() => location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search), 700); }
+  btn.disabled = true;
+  try {
+    const { purchaseId } = await API.post(`/packages/${id}/buy`);
+    const r = await payPurchase(purchaseId, 'Spa package');
+    if (!r.success) throw new Error(r.message || 'Payment failed.');
+    celebrate('Package bought', 'Book your sessions any time — they’re in your Wallet.', () => location.href = '/wallet.html');
+  } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+}
+async function applyGift() {
+  const code = document.getElementById('giftInput').value.trim(), msg = document.getElementById('giftMsg');
+  if (!code) { msg.textContent = 'Enter a gift card code.'; return; }
+  try {
+    const r = await API.get('/giftcards/check?code=' + encodeURIComponent(code));
+    if (!r.valid) { appliedGift = null; msg.textContent = r.error; msg.style.color = 'var(--plum)'; }
+    else { appliedGift = { code, balance: r.balance }; msg.textContent = `Gift card balance ${money(r.balance)} applied.`; msg.style.color = 'var(--moss)'; }
+  } catch (e) { appliedGift = null; msg.textContent = e.message; msg.style.color = 'var(--plum)'; }
+  renderPriceDisplay(servicesData.find(x => x.id === selectedServiceId));
+}
+
 async function confirmBooking() {
   const btn = document.getElementById('confirmPayBtn');
   const notifyChannel = 'all';
@@ -391,10 +475,13 @@ async function confirmBooking() {
   try {
     const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode, notifyChannel };
     if (appliedCoupon && appliedCoupon.valid) bookingBody.couponCode = appliedCoupon.code;
+    if (tChoice.therapistId) bookingBody.therapistId = tChoice.therapistId; else if (tChoice.gender) bookingBody.gender = tChoice.gender;
+    if (appliedGift) bookingBody.giftCardCode = appliedGift.code;
+    if (usePackage) { bookingBody.customerPackageId = usePackage; delete bookingBody.couponCode; delete bookingBody.giftCardCode; }
     const { booking, message } = await API.post('/bookings', bookingBody);
 
-    if (paymentMode === 'pay_at_venue') {
-      // Booking is already confirmed server-side — nothing else to do.
+    if (booking.status === 'confirmed') {
+      // Confirmed server-side (pay at spa, package session, or fully covered by a gift card).
       closePayModal();
       celebrate('Booking confirmed', (message || 'Pay at the spa.') + ' Confirmation sent by SMS & WhatsApp.', () => window.location.href = '/account.html');
       return;

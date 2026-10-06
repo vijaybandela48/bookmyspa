@@ -394,6 +394,18 @@ function seedDemoData(mkUser) {
   db.prepare('INSERT INTO featured_placements (spa_id, starts_on, ends_on, amount, reference, note) VALUES (?,?,?,?,?,?)')
     .run(spa3, pastDate(3), pastDate(-27), 2999, 'DEMO', 'Demo 30-day placement');
 
+  // Demo therapists and a package (development data only)
+  const svc = (n) => db.prepare('SELECT id FROM services WHERE spa_id = ? AND name = ?').get(spa1, n).id;
+  const mkTherapist = (name, gender, bio, services) => {
+    const t = Number(db.prepare('INSERT INTO therapists (spa_id, name, gender, bio) VALUES (?,?,?,?)').run(spa1, name, gender, bio).lastInsertRowid);
+    for (const s of services) db.prepare('INSERT INTO therapist_services (therapist_id, service_id) VALUES (?,?)').run(t, svc(s));
+  };
+  mkTherapist('Meera', 'female', '8 years · Swedish and deep tissue', ['Swedish Full Body Massage', 'Deep Tissue Massage', 'Signature Facial']);
+  mkTherapist('Anita', 'female', 'Facial and relaxation specialist', ['Swedish Full Body Massage', 'Signature Facial']);
+  mkTherapist('Rahul', 'male', 'Sports and deep tissue therapist', ['Swedish Full Body Massage', 'Deep Tissue Massage']);
+  db.prepare('INSERT INTO packages (spa_id, service_id, name, sessions, price, validity_days) VALUES (?,?,?,?,?,?)')
+    .run(spa1, svc('Swedish Full Body Massage'), '5 Swedish massages', 5, 7499, 180);
+
   console.log('Seed complete. Demo logins:');
   console.log('  admin@bookmyspa.demo / admin123 (admin)');
   console.log('  owner1@bookmyspa.demo / owner123 (spa owner - Hyderabad spas)');
@@ -455,6 +467,57 @@ try {
       qty INTEGER NOT NULL DEFAULT 1, reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE INDEX IF NOT EXISTS idx_blocks_spa_date ON slot_blocks(spa_id, date);
   `);
+} catch (e) { console.error('Migration error:', e.message); }
+
+// ---- Phase-2: therapists, GST invoices, gift cards & packages, Razorpay Route (additive only) ----
+try {
+  const has = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some((x) => x.name === c);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS therapists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, spa_id INTEGER NOT NULL REFERENCES spas(id), name TEXT NOT NULL,
+      gender TEXT NOT NULL CHECK(gender IN ('female','male','other')), bio TEXT, active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS therapist_services (
+      therapist_id INTEGER NOT NULL REFERENCES therapists(id), service_id INTEGER NOT NULL REFERENCES services(id),
+      PRIMARY KEY (therapist_id, service_id));
+    CREATE TABLE IF NOT EXISTS invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('customer','commission')),
+      spa_id INTEGER, booking_id INTEGER, settlement_id INTEGER, invoice_no TEXT NOT NULL UNIQUE,
+      series TEXT NOT NULL, fy TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL,
+      issued_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_booking ON invoices(booking_id) WHERE booking_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_settlement ON invoices(settlement_id) WHERE settlement_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS gift_cards (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, amount REAL NOT NULL, balance REAL NOT NULL,
+      purchaser_id INTEGER NOT NULL REFERENCES users(id), recipient_name TEXT, message TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','void')), expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS gift_card_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, gift_card_id INTEGER NOT NULL REFERENCES gift_cards(id), booking_id INTEGER,
+      amount REAL NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('redeem','restore')), created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS packages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, spa_id INTEGER NOT NULL REFERENCES spas(id), service_id INTEGER NOT NULL REFERENCES services(id),
+      name TEXT NOT NULL, sessions INTEGER NOT NULL, price REAL NOT NULL, validity_days INTEGER NOT NULL DEFAULT 180,
+      active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS customer_packages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, package_id INTEGER NOT NULL REFERENCES packages(id), customer_id INTEGER NOT NULL REFERENCES users(id),
+      spa_id INTEGER NOT NULL, service_id INTEGER NOT NULL, name TEXT NOT NULL, sessions_total INTEGER NOT NULL,
+      sessions_used INTEGER NOT NULL DEFAULT 0, per_session_value REAL NOT NULL, price_paid REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','void')), expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL REFERENCES users(id),
+      kind TEXT NOT NULL CHECK(kind IN ('giftcard','package')), ref_id INTEGER NOT NULL, amount REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','paid','failed')), payment_ref TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+  `);
+  for (const [t, c, def] of [
+    ['bookings', 'therapist_id', 'INTEGER'], ['bookings', 'therapist_choice', 'TEXT'],
+    ['bookings', 'giftcard_amount', 'REAL NOT NULL DEFAULT 0'], ['bookings', 'gift_card_id', 'INTEGER'],
+    ['bookings', 'customer_package_id', 'INTEGER'], ['bookings', 'route_transfer', 'INTEGER NOT NULL DEFAULT 0'],
+    ['spas', 'legal_name', 'TEXT'], ['spas', 'gstin', 'TEXT'], ['spas', 'gst_rate', 'REAL NOT NULL DEFAULT 18'],
+    ['spas', 'razorpay_account_id', 'TEXT'],
+  ]) if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
 } catch (e) { console.error('Migration error:', e.message); }
 
 seed();

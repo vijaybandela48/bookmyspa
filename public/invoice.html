@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice — BookMySpa</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap page-body invoice-page" style="max-width:820px">
+  <div class="no-print" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;flex-wrap:wrap">
+    <a href="javascript:history.back()" class="btn small outline">← Back</a>
+    <button class="btn gold" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+  <div class="panel invoice" id="inv"><p>Loading…</p></div>
+</div>
+<div id="sb-footer" class="no-print"></div>
+<script src="/js/api.js"></script>
+<script>
+renderNav(); renderFooter();
+const q = new URLSearchParams(location.search);
+const row = (k, v) => v ? `<tr><td>${k}</td><td style="text-align:right" class="num">${v}</td></tr>` : '';
+async function load() {
+  const el = document.getElementById('inv');
+  try {
+    const { invoice: v } = await API.get(q.get('settlement') ? `/settlements/${q.get('settlement')}/invoice` : `/bookings/${q.get('booking')}/invoice`);
+    const t = v.tax;
+    document.title = `${v.invoice_no} — ${v.title}`;
+    el.innerHTML = `
+      <div class="inv-head">
+        <div><h2 style="margin:0">${esc(v.title)}</h2><p class="helper-text" style="margin:4px 0 0">No. <strong class="mono">${esc(v.invoice_no)}</strong> · ${formatDate(v.issued_at)}</p></div>
+        <div style="text-align:right"><div class="brand" style="color:var(--moss-deep)">🌿 BookMySpa</div></div>
+      </div>
+      <div class="inv-parties">
+        <div><h4>From</h4><p><strong>${esc(v.supplier.name)}</strong>${v.supplier.trade_name && v.supplier.trade_name !== v.supplier.name ? '<br>(' + esc(v.supplier.trade_name) + ')' : ''}<br>${esc(v.supplier.address || '')}${v.supplier.phone ? '<br>' + esc(v.supplier.phone) : ''}${v.supplier.gstin ? '<br>GSTIN <span class="mono">' + esc(v.supplier.gstin) + '</span>' : ''}</p></div>
+        <div><h4>To</h4><p><strong>${esc(v.recipient.name)}</strong>${v.recipient.trade_name && v.recipient.trade_name !== v.recipient.name ? '<br>(' + esc(v.recipient.trade_name) + ')' : ''}${v.recipient.address ? '<br>' + esc(v.recipient.address) : ''}${v.recipient.phone ? '<br>' + esc(v.recipient.phone) : ''}${v.recipient.email ? '<br>' + esc(v.recipient.email) : ''}${v.recipient.gstin ? '<br>GSTIN <span class="mono">' + esc(v.recipient.gstin) + '</span>' : ''}</p></div>
+      </div>
+      ${v.booking ? `<p class="inv-ref">Booking <span class="mono">${esc(v.booking.ref || '')}</span> · ${formatDate(v.booking.date)} at ${formatTime(v.booking.time)}${v.booking.therapist ? ' · with ' + esc(v.booking.therapist) : ''}</p>` : ''}
+      ${v.settlement ? `<p class="inv-ref">Settlement #${v.settlement.id} · ${v.settlement.bookings} appointment(s) · ${esc(v.settlement.result)}${v.settlement.reference ? ' · ref ' + esc(v.settlement.reference) : ''}</p>` : ''}
+      <table class="inv-table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead><tbody>
+        ${v.lines.map(l => `<tr><td>${esc(l.description)}</td><td style="text-align:right" class="num">${money(l.amount)}</td></tr>`).join('')}
+        ${v.coupon ? `<tr><td>Coupon ${esc(v.coupon.code)}</td><td style="text-align:right" class="num">−${money(v.coupon.amount)}</td></tr>` : ''}
+      </tbody></table>
+      <table class="inv-sum"><tbody>
+        ${t ? row('Taxable value', money(t.taxable)) + (t.igst !== undefined ? row(`IGST ${t.rate}%`, money(t.igst)) : row(`CGST ${t.rate / 2}%`, money(t.cgst)) + row(`SGST ${t.rate / 2}%`, money(t.sgst))) : ''}
+        <tr class="total"><td>Total</td><td style="text-align:right" class="num">${money(v.total)}</td></tr>
+        ${(v.paid_by || []).map(p => row('Paid — ' + esc(p.method), money(p.amount))).join('')}
+      </tbody></table>
+      <p class="helper-text" style="margin-top:18px">${esc(v.note || '')}${v.facilitator ? '<br>' + esc(v.facilitator) : ''}</p>`;
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+if (API.requireRole()) load();
+</script>
+</body>
+</html>

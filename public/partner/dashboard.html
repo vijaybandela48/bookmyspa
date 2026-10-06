@@ -247,6 +247,12 @@
         <option value="0">Any time before</option><option value="2">2 hours before</option><option value="4">4 hours before</option>
         <option value="12">12 hours before</option><option value="24">24 hours before</option><option value="48">48 hours before</option></select></div>
     </div>
+    <div class="form-row">
+      <div style="flex:2"><label for="es_legal">Registered business name (for invoices)</label><input id="es_legal" maxlength="120" placeholder="e.g. Serene Wellness Pvt Ltd"></div>
+      <div><label for="es_gstin">GSTIN</label><input id="es_gstin" maxlength="15" placeholder="Leave empty if not registered" style="text-transform:uppercase"></div>
+      <div><label for="es_gst">GST rate</label><select id="es_gst"><option value="18">18%</option><option value="12">12%</option><option value="5">5%</option></select></div>
+    </div>
+    <p class="helper-text">With a GSTIN, customers get tax invoices (prices include GST). Without one, they get receipts.</p>
     <label>Weekly day off</label>
     <div class="day-picks" id="es_off"></div>
     <hr class="divider-line">
@@ -278,6 +284,31 @@
     <button class="btn gold block" style="margin-top:14px" onclick="saveServiceEdits()">Save service</button>
   </div>
 </div>
+
+<div class="modal-overlay" id="thModal"><div class="modal" style="max-width:640px;max-height:92vh;overflow-y:auto">
+  <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Therapists</h3><button class="btn small outline" onclick="closeModal('thModal')">Close</button></div>
+  <p class="helper-text">Customers can choose a therapist or a female/male therapist. A time is only offered when a matching therapist is free.</p>
+  <div id="thList"></div>
+  <hr class="divider-line"><h4 id="thFormTitle" style="margin-bottom:4px">Add a therapist</h4>
+  <div class="form-row"><div style="flex:2"><label for="th_name">Name</label><input id="th_name" maxlength="60"></div>
+    <div><label for="th_gender">Gender</label><select id="th_gender"><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option></select></div></div>
+  <label for="th_bio">Short bio (shown to customers)</label><input id="th_bio" maxlength="160" placeholder="e.g. 8 years · Swedish and deep tissue">
+  <label>Services they perform</label><div class="day-picks" id="th_svcs"></div>
+  <div style="display:flex;gap:10px;margin-top:14px"><button class="btn outline" id="thCancelEdit" style="display:none" onclick="resetThForm()">Cancel edit</button><button class="btn gold" onclick="saveTherapist()">Save therapist</button></div>
+</div></div>
+<div class="modal-overlay" id="pkModal"><div class="modal" style="max-width:640px;max-height:92vh;overflow-y:auto">
+  <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Packages</h3><button class="btn small outline" onclick="closeModal('pkModal')">Close</button></div>
+  <p class="helper-text">Sell several sessions of a service at once. Customers pay online upfront; you’re paid for each session after it happens.</p>
+  <div id="pkList"></div>
+  <hr class="divider-line"><h4 style="margin-bottom:4px">New package</h4>
+  <label for="pk_svc">Service</label><select id="pk_svc"></select>
+  <div class="form-row"><div style="flex:2"><label for="pk_name">Package name</label><input id="pk_name" maxlength="80" placeholder="e.g. 5 Swedish massages"></div>
+    <div><label for="pk_n">Sessions</label><input id="pk_n" type="number" min="2" max="50" value="5"></div></div>
+  <div class="form-row"><div><label for="pk_price">Package price (₹)</label><input id="pk_price" type="number" min="1"></div>
+    <div><label for="pk_days">Valid for (days)</label><input id="pk_days" type="number" min="30" max="730" value="180"></div></div>
+  <p class="helper-text" id="pk_hint"></p>
+  <button class="btn gold" style="margin-top:10px" onclick="savePackage()">Create package</button>
+</div></div>
 
 <script src="/js/api.js"></script>
 <script>
@@ -334,6 +365,8 @@ async function loadSpas() {
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn small outline" onclick="openRoomManager(${s.id})">① 🛏️ Rooms &amp; capacity</button>
           <button class="btn small outline" onclick="openServiceManager(${s.id})">② 💆 Manage services</button>
+          <button class="btn small outline" onclick="openTherapists(${s.id})">👩‍⚕️ Therapists</button>
+          <button class="btn small outline" onclick="openPackages(${s.id})">🎁 Packages</button>
           <button class="btn small outline" onclick="openCouponManager(${s.id})">🏷️ Coupons</button>
           <button class="btn small outline" onclick="openMediaManager(${s.id})">📷 Photos &amp; videos</button>
           <button class="btn small outline" onclick="editSpaLocation(${s.id}, ${s.latitude || 'null'}, ${s.longitude || 'null'})">📍 ${s.latitude ? 'Update' : 'Set'} location</button>
@@ -817,6 +850,8 @@ async function loadOwnerBookings() {
               <h4>${b.service_name}</h4>
               <div class="sub">${b.customer_name} · ${b.customer_phone || 'no phone'} · ${b.spa_name}</div>
               ${b.booking_ref ? `<div class="mono" style="font-size:12.5px;color:var(--plum);margin-top:3px">Booking ID: ${esc(b.booking_ref)}</div>` : ''}
+              ${b.therapist_name ? `<div class="helper-text" style="margin:2px 0 0">Therapist: ${esc(b.therapist_name)}</div>` : ''}
+              ${b.payment_status === 'paid' ? `<a href="/partner/invoice.html?booking=${b.id}" style="font-size:12.5px;color:var(--moss);font-weight:600">🧾 Invoice</a>` : ''}
             </div>
             <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} (-${money(b.coupon_discount)})</div>` : ''}</div>
           </div>
@@ -999,11 +1034,11 @@ async function loadEarnings() {
         </div>`).join('')}
       <h3 style="margin:24px 0 10px">Settlement history</h3>
       ${history.length ? `<div class="panel" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13.5px">
-        <thead><tr style="background:var(--stone-dark);text-align:left"><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Bookings</th><th style="padding:10px 14px">Result</th><th style="padding:10px 14px">Reference</th></tr></thead>
+        <thead><tr style="background:var(--stone-dark);text-align:left"><th style="padding:10px 14px">Date</th><th style="padding:10px 14px">Spa</th><th style="padding:10px 14px">Bookings</th><th style="padding:10px 14px">Result</th><th style="padding:10px 14px">Reference</th><th style="padding:10px 14px"></th></tr></thead>
         <tbody>${history.map(h => `<tr style="border-top:1px solid var(--line)">
           <td style="padding:10px 14px">${formatDate(h.created_at)}</td><td style="padding:10px 14px">${esc(h.spa_name)}</td><td style="padding:10px 14px">${h.booking_count}</td>
           <td style="padding:10px 14px">${h.direction === 'payout_to_spa' ? 'Paid to you ' + money(h.amount) : h.direction === 'collected_from_spa' ? 'You paid ' + money(h.amount) : 'Nothing owed'}</td>
-          <td style="padding:10px 14px" class="mono helper-text">${esc(h.reference || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No settlements yet.</p>'}`;
+          <td style="padding:10px 14px" class="mono helper-text">${esc(h.reference || '—')}</td><td style="padding:10px 14px"><a href="/partner/invoice.html?settlement=${h.id}" style="color:var(--moss);font-weight:600">Statement</a></td></tr>`).join('')}</tbody></table></div>` : '<p class="helper-text">No settlements yet.</p>'}`;
   } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
 }
 
@@ -1046,7 +1081,7 @@ async function openEditSpa(id) {
   const s = mySpas.find(x => x.id === id);
   const v = (k, val) => { document.getElementById(k).value = val ?? ''; };
   v('es_name', s.name); v('es_desc', s.description); v('es_city', s.city); v('es_phone', s.phone); v('es_address', s.address);
-  v('es_open', s.opening_time); v('es_close', s.closing_time);
+  v('es_open', s.opening_time); v('es_close', s.closing_time); v('es_legal', s.legal_name); v('es_gstin', s.gstin); v('es_gst', String(s.gst_rate || 18));
   const sel = document.getElementById('es_cancel'); sel.value = String(s.cancel_window_hours ?? 4);
   if (sel.value !== String(s.cancel_window_hours ?? 4)) { sel.add(new Option(`${s.cancel_window_hours} hours before`, s.cancel_window_hours)); sel.value = String(s.cancel_window_hours); }
   const off = String(s.weekly_off || '').split(',').filter(Boolean);
@@ -1077,7 +1112,8 @@ async function saveSpaEdits() {
   const off = [...document.querySelectorAll('#es_off input:checked')].map(c => c.value).join(',');
   try {
     await API.put(`/owner/spas/${editSpaId}`, { name: g('es_name'), description: g('es_desc'), city: g('es_city'), phone: g('es_phone'), address: g('es_address'),
-      opening_time: g('es_open'), closing_time: g('es_close'), cancel_window_hours: Number(g('es_cancel')), weekly_off: off });
+      opening_time: g('es_open'), closing_time: g('es_close'), cancel_window_hours: Number(g('es_cancel')), weekly_off: off,
+      legal_name: g('es_legal'), gstin: g('es_gstin'), gst_rate: Number(g('es_gst')) });
     toast('Spa details saved.'); closeModal('editSpaModal'); loadSpas();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -1155,7 +1191,7 @@ async function loadCalendar() {
             const style = `top:${top}px;height:${h}px;left:calc(${(it._lane / lanes) * 100}% + 3px);width:calc(${100 / lanes}% - 6px)`;
             return it._kind === 'block'
               ? `<div class="cal-item block" style="${style}" title="${esc(it.reason || 'Blocked')}"><span>${formatTime(it.start_time)}–${formatTime(it.end_time)} · ${it.qty} room${it.qty !== 1 ? 's' : ''}</span><strong>${esc(it.reason || 'Blocked')}</strong><button class="cal-x" onclick="removeBlock(${it.id})" aria-label="Remove block">×</button></div>`
-              : `<div class="cal-item ${statusClass(it)}" style="${style}" title="${esc(it.booking_ref || '')}"><span>${formatTime(it.start_time)} · ${esc(it.booking_ref || '')}</span><strong>${esc(it.customer_name)}</strong><em>${esc(it.service_name)}</em></div>`;
+              : `<div class="cal-item ${statusClass(it)}" style="${style}" title="${esc(it.booking_ref || '')}"><span>${formatTime(it.start_time)} · ${esc(it.booking_ref || '')}</span><strong>${esc(it.customer_name)}</strong><em>${esc(it.service_name)}${it.therapist_name ? ' · ' + esc(it.therapist_name) : ''}</em></div>`;
           }).join('')}
         </div></div>`;
     }).join('');
@@ -1182,6 +1218,76 @@ async function addBlock() {
 }
 async function removeBlock(id) {
   try { const r = await API.del(`/owner/blocks/${id}`); toast(r.message); loadCalendar(); } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Therapists ----------------
+let thSpa = null, thEditId = null, thServices = [];
+async function openTherapists(spaId) {
+  thSpa = spaId; document.getElementById('thModal').classList.add('open');
+  thServices = (await API.get(`/owner/spas/${spaId}/services`)).services.filter(x => x.active);
+  resetThForm(); loadTherapists();
+}
+function resetThForm(t) {
+  thEditId = t ? t.id : null;
+  document.getElementById('thFormTitle').textContent = t ? `Edit ${t.name}` : 'Add a therapist';
+  document.getElementById('thCancelEdit').style.display = t ? '' : 'none';
+  document.getElementById('th_name').value = t ? t.name : ''; document.getElementById('th_gender').value = t ? t.gender : 'female'; document.getElementById('th_bio').value = t ? (t.bio || '') : '';
+  document.getElementById('th_svcs').innerHTML = thServices.map(sv => `<label class="day-pick"><input type="checkbox" value="${sv.id}" ${t && t.service_ids.includes(sv.id) ? 'checked' : ''}><span>${esc(sv.name)}</span></label>`).join('');
+}
+let thCache = [];
+async function loadTherapists() {
+  const el = document.getElementById('thList');
+  try {
+    thCache = (await API.get(`/owner/spas/${thSpa}/therapists`)).therapists;
+    el.innerHTML = thCache.length ? thCache.map(t => `<div class="chip-row" style="${t.active ? '' : 'opacity:.55'}">
+      <span><strong>${esc(t.name)}</strong> · ${t.gender}${t.active ? '' : ' · inactive'}<br><span class="helper-text" style="margin:0">${t.service_ids.map(id => esc((thServices.find(s => s.id === id) || {}).name || '')).filter(Boolean).join(', ')}${t.upcoming ? ` · ${t.upcoming} upcoming` : ''}</span></span>
+      <span style="display:flex;gap:6px"><button class="btn small outline" onclick="resetThForm(thCache.find(x => x.id === ${t.id}))">Edit</button>
+      <button class="btn small outline" onclick="toggleTherapist(${t.id}, ${!t.active})">${t.active ? 'Deactivate' : 'Activate'}</button></span></div>`).join('')
+      : '<p class="helper-text">No therapists yet — bookings work without them, but customers can’t choose one.</p>';
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function saveTherapist() {
+  const body = { name: document.getElementById('th_name').value.trim(), gender: document.getElementById('th_gender').value, bio: document.getElementById('th_bio').value.trim(),
+    service_ids: [...document.querySelectorAll('#th_svcs input:checked')].map(c => Number(c.value)) };
+  try { const r = thEditId ? await API.put(`/owner/therapists/${thEditId}`, body) : await API.post(`/owner/spas/${thSpa}/therapists`, body); toast(r.message); resetThForm(); loadTherapists(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function toggleTherapist(id, active) {
+  try { const r = await API.put(`/owner/therapists/${id}`, { active }); toast(r.message); loadTherapists(); } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------- Packages ----------------
+let pkSpa = null, pkSvcs = [];
+async function openPackages(spaId) {
+  pkSpa = spaId; document.getElementById('pkModal').classList.add('open');
+  pkSvcs = (await API.get(`/owner/spas/${spaId}/services`)).services.filter(x => x.active);
+  const sel = document.getElementById('pk_svc'); sel.innerHTML = pkSvcs.map(sv => `<option value="${sv.id}">${esc(sv.name)} — ${money(sv.final_price)}</option>`).join('');
+  ['pk_svc', 'pk_n', 'pk_price'].forEach(id => document.getElementById(id).oninput = pkHint); sel.onchange = pkHint; pkHint();
+  loadPackages();
+}
+function pkHint() {
+  const sv = pkSvcs.find(x => x.id === Number(document.getElementById('pk_svc').value)), n = Number(document.getElementById('pk_n').value || 0), p = Number(document.getElementById('pk_price').value || 0);
+  document.getElementById('pk_hint').textContent = sv && n ? `Separately: ${money(sv.final_price * n)}${p ? ` · package: ${money(p)} (${money(Math.round(p / n))} per session, customers save ${money(Math.max(0, Math.round(sv.final_price * n - p)))})` : ''}` : '';
+}
+async function loadPackages() {
+  const el = document.getElementById('pkList');
+  try {
+    const { packages } = await API.get(`/owner/spas/${pkSpa}/packages`);
+    el.innerHTML = packages.length ? packages.map(p => `<div class="chip-row" style="${p.active ? '' : 'opacity:.55'}"><span><strong>${esc(p.name)}</strong> · ${p.sessions} × ${esc(p.service_name)} · ${money(p.price)} · ${p.validity_days} days<br>
+      <span class="helper-text" style="margin:0">${p.sold} sold${p.active ? '' : ' · hidden from customers'}</span></span>
+      <button class="btn small outline" onclick="togglePackage(${p.id}, ${!p.active})">${p.active ? 'Stop selling' : 'Sell again'}</button></div>`).join('')
+      : '<p class="helper-text">No packages yet.</p>';
+  } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function savePackage() {
+  try {
+    const r = await API.post(`/owner/spas/${pkSpa}/packages`, { service_id: Number(document.getElementById('pk_svc').value), name: document.getElementById('pk_name').value.trim(),
+      sessions: Number(document.getElementById('pk_n').value), price: Number(document.getElementById('pk_price').value), validity_days: Number(document.getElementById('pk_days').value) });
+    toast(r.message); document.getElementById('pk_name').value = ''; document.getElementById('pk_price').value = ''; loadPackages();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function togglePackage(id, active) {
+  try { const r = await API.put(`/owner/packages/${id}`, { active }); toast(r.message); loadPackages(); } catch (e) { toast(e.message, 'error'); }
 }
 
 if (AUTH_OK) loadSpas();

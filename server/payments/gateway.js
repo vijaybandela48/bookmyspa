@@ -22,13 +22,14 @@
 const crypto = require('node:crypto');
 
 const isLive = !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+const API_BASE = (process.env.RAZORPAY_API_BASE || 'https://api.razorpay.com').replace(/\/+$/, ''); // overridable for tests
 
 function authHeader() {
   const token = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`).toString('base64');
   return `Basic ${token}`;
 }
 
-async function createOrder({ amount, bookingId }) {
+async function createOrder({ amount, bookingId, receipt, transfers, notes }) {
   if (!isLive) {
     await new Promise((r) => setTimeout(r, 200));
     return {
@@ -40,13 +41,15 @@ async function createOrder({ amount, bookingId }) {
     };
   }
 
-  const res = await fetch('https://api.razorpay.com/v1/orders', {
+  const res = await fetch(`${API_BASE}/v1/orders`, {
     method: 'POST',
     headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
     body: JSON.stringify({
       amount: Math.round(amount * 100),
       currency: 'INR',
-      receipt: `booking_${bookingId}`,
+      receipt: receipt || `booking_${bookingId}`,
+      ...(notes ? { notes } : {}),
+      ...(transfers && transfers.length ? { transfers } : {}), // Razorpay Route: split to the spa's linked account
     }),
   });
   if (!res.ok) {
@@ -93,16 +96,16 @@ function verifyPayment({ mode, orderId, paymentId, signature }) {
   };
 }
 
-async function refund({ transactionRef, amount }) {
+async function refund({ transactionRef, amount, reverseAll }) {
   if (!isLive) {
     await new Promise((r) => setTimeout(r, 150));
     return { success: true, refundId: 'mock_refund_' + crypto.randomBytes(6).toString('hex') };
   }
   try {
-    const res = await fetch(`https://api.razorpay.com/v1/payments/${transactionRef}/refund`, {
+    const res = await fetch(`${API_BASE}/v1/payments/${transactionRef}/refund`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: Math.round(amount * 100) }),
+      body: JSON.stringify({ amount: Math.round(amount * 100), ...(reverseAll ? { reverse_all: 1 } : {}) }), // reverse_all pulls back Route transfers
     });
     if (!res.ok) {
       const errText = await res.text();

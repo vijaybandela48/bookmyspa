@@ -86,6 +86,8 @@ each feature on automatically.
 | `COMMISSION_PERCENT` | Default platform commission (default 10). Per-spa overrides in Admin → Commission & payouts |
 | `PARTNER_URL` | Public URL of the partner portal, e.g. `https://partner.bookmyspa.in` |
 | `TZ_OFFSET_MINUTES` | Business timezone offset (default 330 = IST) |
+| `RAZORPAY_ROUTE=on` | Automatic payouts to spas via Razorpay Route (needs Route enabled on your Razorpay account and each spa's linked account ID set in Admin) |
+| `PLATFORM_LEGAL_NAME`, `PLATFORM_GSTIN`, `PLATFORM_ADDRESS` | Your company details on commission invoices to spas. Without a GSTIN they're "commission statements" |
 | `MSG91_REMINDER_TEMPLATE_ID` | Appointment-reminder SMS (~2 h before). Flow variables: `##name## ##service## ##spa## ##time## ##ref##` |
 | `MSG91_WHATSAPP_REMINDER_TEMPLATE` | Appointment-reminder WhatsApp template, 5 body variables: name, service, spa, time, directions link |
 | `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (+ optional `BACKUP_S3_REGION` default `auto`, `BACKUP_S3_PREFIX`) | Optional offsite copy of every backup (Cloudflare R2, Backblaze B2, AWS S3…) |
@@ -129,6 +131,47 @@ using their phone's GPS, and customers still get an embedded map and
   - Nothing is deleted, so bookings, payments and reviews stay intact for your records.
 - **Appointment reminders** go out ~2 hours before each appointment by SMS and WhatsApp, never twice, and not for bookings made in the last hour.
 
+## Therapists, packages, gift cards, invoices & automatic payouts
+
+**Therapists:**
+- Owners add their therapists (Partner → spa → 👩‍⚕️ Therapists): name, gender, a short bio, and which services each one performs.
+- Customers choose **Any**, **Female**, **Male** or a named therapist. A time is only offered when a matching therapist and a room are both free, and "N left" shows whichever is scarcer.
+- "Any" assigns whoever is free with the fewest bookings that day.
+- Rescheduling keeps the customer's preference.
+- Services with no therapists listed (e.g. a self-service jacuzzi) work exactly as before.
+
+**Packages:**
+- Owners sell bundles (Partner → spa → 🎁 Packages), e.g. "5 Swedish massages for ₹7,499, valid 180 days".
+- Customers pay online upfront and book each session from the spa page ("Use my package") or from **Wallet**. Cancelling in time returns the session.
+- Each session is worth price ÷ sessions. The spa is credited that value, minus commission, after the session happens.
+- Sessions still unused at expiry stay with the platform. Decide your policy for those and state it in your Terms.
+
+**Gift cards:**
+- Customers buy BookMySpa gift cards (₹500–₹50,000, valid 12 months) in **Wallet**, then share the code by WhatsApp or copy it.
+- Codes work at any spa. At checkout the card pays as much as its balance covers, and the rest is paid online or at the spa. A card covering everything confirms instantly.
+- Cancelled bookings and abandoned payments put the money back on the card.
+- The money is held by the platform, and the spa is credited the gift-card portion (minus commission) after the appointment.
+- Admin shows the total value of unused gift cards and packages: what you still owe in services.
+
+**GST invoices:**
+- Every paid booking gets an invoice (🧾 in My bookings and in the partner Bookings tab), printable or saveable as PDF.
+- If the spa has entered a GSTIN (Edit details & hours), it's a **tax invoice**: prices include GST at the spa's rate, split CGST/SGST.
+- Without a GSTIN it's a receipt.
+- Numbering is per spa and per financial year (`S1/26-27/0001`). A number is assigned once and never changes.
+- Every settlement also gets a commission invoice from you to the spa. Set `PLATFORM_GSTIN` to make it a tax invoice (CGST/SGST, or IGST when the spa's GSTIN is from another state).
+- *Have your CA confirm the GST treatment (rates, place of supply, TCS for marketplaces) before relying on these.*
+
+**Automatic payouts (Razorpay Route):**
+1. Ask Razorpay to enable Route.
+2. Create a **linked account** for each spa in Razorpay Dashboard → Route → Accounts (Razorpay handles the spa's KYC and bank details).
+3. Paste its `acc_…` ID in Admin → Commission & payouts → **Link Razorpay**.
+4. Set `RAZORPAY_ROUTE=on`.
+
+How it then behaves:
+- Each online booking's order tells Razorpay to send the spa its share (price − commission). The money is held until the day after the appointment, so cancellations can still be refunded; a refund also pulls back the spa's share.
+- These bookings drop out of the manual settlement ledger.
+- Pay-at-spa commission, gift-card and package money still settle manually as before.
+
 ## Design
 
 "Steam & stone":
@@ -139,7 +182,7 @@ using their phone's GPS, and customers still get an embedded map and
 
 ## Tests
 
-`npm test` runs the automated suite: 72 API checks covering portals, security, bookings, commission, closures, walk-in blocks, cancellation windows, rescheduling, profiles, admin controls, reminders and backups. It runs on a temporary copy with a fresh demo database and never touches your real data.
+`npm test` runs the automated suite: 135 checks covering portals, security, bookings, commission, closures, walk-in blocks, cancellation windows, rescheduling, profiles, admin controls, reminders, therapists, packages, gift cards, GST invoices, backups and Razorpay Route payouts (against a stand-in Razorpay server). It runs on a temporary copy with a fresh demo database and never touches your real data.
 
 ## Booking IDs, password reset, backups & safe updates
 
