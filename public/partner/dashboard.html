@@ -15,6 +15,7 @@
 <div class="wrap page-body">
   <div class="eyebrow">Spa owner</div>
   <h1 style="margin-top:4px">Owner dashboard</h1>
+  <div class="panel prem-teaser" id="premTeaser" style="display:none"></div>
 
   <div class="tabs" style="margin-top:24px">
     <div class="tab active" data-tab="spas" onclick="switchTab('spas')">My spas</div>
@@ -1290,7 +1291,17 @@ async function togglePackage(id, active) {
   try { const r = await API.put(`/owner/packages/${id}`, { active }); toast(r.message); loadPackages(); } catch (e) { toast(e.message, 'error'); }
 }
 
-if (AUTH_OK) loadSpas();
+async function loadPremTeaser() {
+  try {
+    const p = await API.get('/owner/premium'), el = document.getElementById('premTeaser');
+    if (!p.settings.enabled && !p.status.active) return;
+    el.style.display = 'flex';
+    el.innerHTML = p.status.active
+      ? `<div><h3>✨ Premium is on</h3><p>See your regulars, guests to win back and busy times. ${p.status.daysLeft} day${p.status.daysLeft !== 1 ? 's' : ''} left.</p></div><a class="btn gold" href="/partner/insights.html">Open Insights</a>`
+      : `<div><h3>✨ Know your guests better</h3><p>Premium Insights: customer history, win-back messages, busy-time heatmaps and revenue trends${p.status.trialAvailable && p.settings.trialDays ? ` — try ${p.settings.trialDays} days free` : ''}.</p></div><a class="btn gold" href="/partner/insights.html">See Premium</a>`;
+  } catch {}
+}
+if (AUTH_OK) { loadSpas(); loadPremTeaser(); }
 </script>
 </body>
 </html>

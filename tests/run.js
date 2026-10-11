@@ -26,7 +26,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
 
 (async () => {
-  const srv = spawn(process.execPath, ['server/server.js'], { cwd: TMP, env: { ...process.env, PORT: String(PORT), NODE_ENV: 'development' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = spawn(process.execPath, ['server/server.js'], { cwd: TMP, env: { ...process.env, PORT: String(PORT), NODE_ENV: 'development', SEED_DEMO_HISTORY: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = ''; srv.stdout.on('data', (d) => (log += d)); srv.stderr.on('data', (d) => (log += d));
   for (let i = 0; i < 40; i++) { try { if ((await fetch(B + '/config')).ok) break; } catch {} await sleep(250); }
 
@@ -301,6 +301,64 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
     ok('commission statement for each settlement', r.status === 200 && /Commission/.test(r.d.invoice.title) && /^BMS\/\d{2}-\d{2}\/00001$/.test(r.d.invoice.invoice_no), r.d);
     ok('other owners can’t see it', (await j('GET', `/settlements/1/invoice`, null, own2)).status === 404);
 
+    group('Premium & Insights');
+    let own3 = await login('owner2@bookmyspa.demo', 'owner123', 'partner');
+    r = await j('GET', '/owner/insights', null, own);
+    ok('Insights locked without Premium (402)', r.status === 402 && r.d.premium === false, r);
+    ok('CSV export locked too', (await j('GET', '/owner/insights/export?type=customers', null, own)).status === 402);
+    r = await j('GET', '/owner/premium', null, own);
+    ok('owner sees admin prices and a free trial offer', r.d.settings.priceMonthly === 999 && r.d.status.trialAvailable && !r.d.status.active, r.d);
+    ok('admin price validation', (await j('PUT', '/admin/premium', { priceMonthly: -5 }, adm)).status === 400);
+    ok('admin sets prices and trial length', (await j('PUT', '/admin/premium', { priceMonthly: 1499, priceYearly: 14999, trialDays: 7 }, adm)).d.settings.priceMonthly === 1499);
+    r = await j('POST', '/owner/premium/subscribe', { plan: 'trial' }, own);
+    ok('free trial starts instantly for 7 days', r.status === 201 && r.d.status.active && r.d.status.daysLeft === 7, r.d);
+    ok('trial only once', (await j('POST', '/owner/premium/subscribe', { plan: 'trial' }, own)).status === 409);
+    r = await j('POST', '/owner/premium/subscribe', { plan: 'monthly' }, own);
+    ok('monthly plan priced from admin setting', r.d.amount === 1499, r.d);
+    let po = await j('POST', `/owner/premium/${r.d.subscriptionId}/checkout`, {}, own);
+    ok('checkout amount matches', po.d.amountPaise === 149900, po.d);
+    let pv; for (let i = 0; i < 6; i++) { pv = await j('POST', `/owner/premium/${r.d.subscriptionId}/verify`, { mode: 'mock', orderId: po.d.orderId, paymentId: 'pp' + i, signature: 'm' }, own); if (pv.d.success) break; }
+    ok('paid month is added after the trial (no lost days)', pv.d.success && pv.d.status.daysLeft >= 7 + 28 && pv.d.status.daysLeft <= 7 + 31, pv.d);
+    ok('another owner can’t pay for this subscription', (await j('POST', `/owner/premium/${r.d.subscriptionId}/verify`, { mode: 'mock', orderId: 'x', paymentId: 'y', signature: 'm' }, own3)).status === 404);
+    // known history: two customers at Serene Bliss
+    const vd = (d) => ist(-d);
+    const addVisit = (cid, d, amt, extra = '') => dbx(`INSERT INTO bookings (customer_id,spa_id,service_id,booking_date,start_time,end_time,amount,status,payment_status,payment_mode,created_at${extra ? ',cancel_reason' : ''})
+      VALUES (?,1,1,?,'18:00','19:00',?,${extra ? "'cancelled'" : "'completed'"},'paid','pay_at_venue',datetime('now','-${d + 2} days')${extra ? ",'" + extra + "'" : ''})`, cid, vd(d), amt);
+    const c1 = dbq("SELECT id FROM users WHERE email='priya.new@example.com'")[0].id;
+    const c2 = Number(dbx("INSERT INTO users (name,email,phone,phone_verified,password_hash,password_salt,role) VALUES ('Rohan Test','rohan@t.com','9000099999',1,'x','x','customer')").lastInsertRowid);
+    [200, 160, 120].forEach((d) => addVisit(c2, d, 1000));   // Rohan: regular, then stopped → lapsed
+    addVisit(c1, 20, 2000); addVisit(c1, 10, 2000);           // Priya: recent visits in the window
+    addVisit(c1, 5, 2000, 'no_show');
+    r = await j('GET', '/owner/insights?spa=1&days=30', null, own);
+    ok('insights unlocked with Premium', r.status === 200 && r.d.range.days === 30, r.status);
+    const pri = r.d.customers.find((c) => c.id === c1), roh = r.d.customers.find((c) => c.id === c2);
+    ok('customer table: Rohan has 3 visits, ₹3,000, lapsed', roh && roh.visits === 3 && roh.spend === 3000 && roh.segment === 'lapsed' && roh.avg_gap_days === 40, roh);
+    ok('customer table: favourite service and last visit', pri && pri.favourite && pri.last_visit === vd(10), pri);
+    ok('window revenue includes the 30-day visits only', r.d.kpis.revenue.value >= 4000 && !r.d.customers.some((c) => c.id === c2 && r.d.series.some((s) => s.from <= vd(120) && s.to >= vd(120))), r.d.kpis.revenue);
+    ok('no-shows counted in the rate', r.d.kpis.noShowRate.value > 0, r.d.kpis.noShowRate);
+    ok('series has a bucket per day for 30 days', r.d.series.length === 30 && r.d.range.unit === 'day');
+    ok('heatmap covers opening hours, Mon–Sun', r.d.heatmap.days[0] === 'Mon' && r.d.heatmap.hours.length >= 10);
+    ok('win-back hint mentions lapsed customers', r.d.notes.some((n) => /haven’t been back|hasn’t been back/.test(n.text)), r.d.notes);
+    ok('12-month view uses monthly buckets', (await j('GET', '/owner/insights?spa=1&days=365', null, own)).d.range.unit === 'month');
+    ok('owners can’t read another owner’s spa', (await j('GET', '/owner/insights?spa=1&days=30', null, own3)).status === 402 && (await j('POST', '/admin/premium/grant', { owner_id: 3, months: 1 }, adm)).status === 201
+      && (await j('GET', '/owner/insights?spa=1', null, own3)).status === 404);
+    ok('… or that owner’s customer history', (await j('GET', `/owner/insights/customers/${c2}`, null, own3)).status === 404);
+    r = await j('GET', `/owner/insights/customers/${c2}`, null, own);
+    ok('customer history for own customer', r.d.bookings.length === 3);
+    dbx("UPDATE users SET name = '=HYPERLINK(\"http://evil\")' WHERE id = ?", c2);
+    const csvRes = await fetch(B + '/owner/insights/export?type=customers&spa=1', { headers: { Authorization: 'Bearer ' + own } });
+    const csvText = await csvRes.text();
+    ok('CSV export is a spreadsheet file', csvRes.headers.get('content-type').startsWith('text/csv') && /^\uFEFF?Name,Phone,Email,Segment/.test(csvText));
+    ok('CSV export defuses spreadsheet formulas', !/\n=HYPERLINK/.test(csvText) && /"'=HYPERLINK/.test(csvText), csvText.split('\n').find((l) => /HYPERLINK/.test(l)));
+    ok('bookings CSV includes booking IDs', /^\uFEFF?Booking ID,Date/.test(await (await fetch(B + '/owner/insights/export?type=bookings', { headers: { Authorization: 'Bearer ' + own } })).text()));
+    r = await j('GET', '/admin/premium', null, adm);
+    ok('admin sees subscribers and Premium revenue', r.d.activeCount === 2 && r.d.revenue === 1499, { a: r.d.activeCount, rev: r.d.revenue });
+    ok('admin stats include Premium', (await j('GET', '/admin/stats', null, adm)).d.premiumActive === 2);
+    const grantId = r.d.subscriptions.find((x) => x.owner_id === 3).id;
+    await j('PUT', `/admin/premium/${grantId}/cancel`, {}, adm);
+    ok('cancelling removes access immediately', (await j('GET', '/owner/insights', null, own3)).status === 402);
+    ok('customers can’t use Premium endpoints', (await j('GET', '/owner/premium', null, cu)).status === 403);
+
     group('Backups');
     r = await j('POST', '/admin/backups', {}, adm);
     ok('manual backup works', r.status === 201 && /manual\.db$/.test(r.d.name), r);
@@ -316,7 +374,7 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
     }); });
     await new Promise((res) => fake.listen(0, res));
     const SECRET = 'route_test_secret';
-    const srv2 = spawn(process.execPath, ['server/server.js'], { cwd: TMP, stdio: 'ignore', env: { ...process.env, PORT: String(PORT), NODE_ENV: 'development',
+    const srv2 = spawn(process.execPath, ['server/server.js'], { cwd: TMP, stdio: 'ignore', env: { ...process.env, PORT: String(PORT), NODE_ENV: 'development', SEED_DEMO_HISTORY: 'off',
       RAZORPAY_KEY_ID: 'rzp_test_FAKE', RAZORPAY_KEY_SECRET: SECRET, RAZORPAY_ROUTE: 'on', RAZORPAY_API_BASE: `http://127.0.0.1:${fake.address().port}` } });
     for (let i = 0; i < 40; i++) { try { if ((await fetch(B + '/config')).ok) break; } catch {} await sleep(250); }
     try {

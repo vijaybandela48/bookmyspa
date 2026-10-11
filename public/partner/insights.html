@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Insights — BookMySpa Partners</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23392C">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+<div id="app"><div class="wrap page-body"><p>Loading…</p></div></div>
+<div id="sb-footer" class="no-print"></div>
+
+<div class="modal-overlay" id="custModal"><div class="modal" style="max-width:640px;max-height:90vh;overflow-y:auto"><div id="custBody"></div></div></div>
+
+<script src="/js/api.js"></script>
+<script src="/js/charts.js"></script>
+<script>
+renderNav('insights'); renderFooter();
+const app = document.getElementById('app');
+const SEG = {
+  vip: { name: 'VIP', blurb: 'Your top 10% by spend', cls: 'seg-vip' },
+  regular: { name: 'Regular', blurb: 'Come back on a steady rhythm', cls: 'seg-regular' },
+  new: { name: 'New', blurb: 'One visit so far', cls: 'seg-new' },
+  at_risk: { name: 'At risk', blurb: 'Overdue for their usual visit', cls: 'seg-risk' },
+  lapsed: { name: 'Lapsed', blurb: 'Not back in over 90 days', cls: 'seg-lapsed' },
+};
+const RANGES = [[30, '30 days'], [90, '90 days'], [180, '6 months'], [365, '12 months']];
+let state = { spa: 'all', days: 90, seg: null, q: '', data: null, prem: null, coupon: '' };
+const rupee = (v) => '₹' + Math.round(v).toLocaleString('en-IN');
+const rupeeC = (v) => '₹' + BMSChart.compact(v);
+const deltaHtml = (d, goodWhenUp = true, unit = '%') => {
+  if (d === null || d === undefined) return '<span class="kpi-delta flat">no earlier data</span>';
+  const up = d > 0, good = d === 0 ? null : (up === goodWhenUp);
+  return `<span class="kpi-delta ${good === null ? 'flat' : good ? 'good' : 'bad'}">${d > 0 ? '▲' : d < 0 ? '▼' : '•'} ${Math.abs(d)}${unit}</span>`;
+};
+
+async function boot() {
+  if (!API.requireRole()) return;
+  try {
+    state.prem = await API.get('/owner/premium');
+    if (!state.prem.status.active) return renderPaywall();
+    await loadInsights();
+  } catch (e) { app.innerHTML = `<div class="wrap page-body"><p>${esc(e.message)}</p></div>`; }
+}
+
+// ===================== Paywall =====================
+function renderPaywall() {
+  const { settings: s, status, onlinePayments } = state.prem;
+  const save = s.priceMonthly * 12 - s.priceYearly;
+  app.innerHTML = `
+  <section class="hero prem-hero">
+    <div class="wrap">
+      <span class="prem-tag">✨ BookMySpa Premium</span>
+      <h1>Know every guest.<br>Fill every quiet hour.</h1>
+      <p class="sub">See who your regulars are, who is drifting away, when you’re busiest and what earns the most — in clear, live charts built from your own bookings.</p>
+    </div>
+  </section>
+  <div class="wrap page-body">
+    ${!s.enabled ? '<div class="panel"><p style="margin:0">Premium isn’t on sale right now. Please check back soon.</p></div>' : `
+    <div class="prem-plans">
+      ${status.trialAvailable && s.trialDays ? `<div class="plan plan-trial"><h3>Try it free</h3><div class="plan-price">${s.trialDays} days</div><p class="helper-text">Full access. No payment details needed.</p><button class="btn outline block" onclick="subscribe('trial', this)">Start free trial</button></div>` : ''}
+      <div class="plan"><h3>Monthly</h3><div class="plan-price">${rupee(s.priceMonthly)}<small>/month</small></div><p class="helper-text">Billed every month. Stop any time.</p><button class="btn gold block" onclick="subscribe('monthly', this)" ${onlinePayments ? '' : 'disabled'}>Get Premium</button></div>
+      <div class="plan plan-best"><span class="plan-flag">Best value</span><h3>Yearly</h3><div class="plan-price">${rupee(s.priceYearly)}<small>/year</small></div><p class="helper-text">${save > 0 ? `Save ${rupee(save)} vs monthly.` : 'One payment for the year.'}</p><button class="btn gold block" onclick="subscribe('yearly', this)" ${onlinePayments ? '' : 'disabled'}>Get Premium yearly</button></div>
+    </div>
+    ${onlinePayments ? '' : '<p class="helper-text" style="text-align:center">Online payment isn’t switched on yet — <a href="/contact.html" style="color:var(--moss);font-weight:700">contact us</a> to activate Premium.</p>'}`}
+    <h2 style="margin:40px 0 16px">What you get</h2>
+    <div class="feature-grid">
+      <div class="feature-card"><div class="ico">👥</div><h3>Customer relationships</h3><p>Every guest’s visits, spend, favourite treatment and how often they come — sorted into VIPs, regulars, new, at-risk and lapsed.</p></div>
+      <div class="feature-card"><div class="ico">💬</div><h3>Win back lost guests</h3><p>One tap sends a friendly WhatsApp to customers who haven’t returned, with an optional coupon code.</p></div>
+      <div class="feature-card"><div class="ico">📈</div><h3>Revenue &amp; bookings trends</h3><p>Revenue, visits and new vs returning customers over 30 days to 12 months, compared with the previous period.</p></div>
+      <div class="feature-card"><div class="ico">🕐</div><h3>Busy-time heatmap</h3><p>See your busiest and quietest hours of the week, so you can staff smartly and fill gaps with offers.</p></div>
+      <div class="feature-card"><div class="ico">💆</div><h3>Services &amp; therapists</h3><p>Which treatments earn the most and how bookings are spread across your team.</p></div>
+      <div class="feature-card"><div class="ico">⬇️</div><h3>Exports &amp; reports</h3><p>Download your bookings and customer list as spreadsheets, or print a report for your records.</p></div>
+    </div>
+  </div>`;
+}
+async function subscribe(plan, btn) {
+  btn.disabled = true;
+  try {
+    const r = await API.post('/owner/premium/subscribe', { plan });
+    if (r.active) { celebrate('Premium is on', r.message, () => location.reload()); return; }
+    const order = await API.post(`/owner/premium/${r.subscriptionId}/checkout`);
+    let result;
+    if (order.mode !== 'razorpay') result = await API.post(`/owner/premium/${r.subscriptionId}/verify`, { mode: 'mock', orderId: order.orderId, paymentId: 'mock_' + Date.now(), signature: 'mock' });
+    else {
+      await rzpLoad();
+      result = await new Promise((resolve, reject) => new Razorpay({ key: order.keyId, order_id: order.orderId, amount: order.amountPaise, currency: order.currency, name: 'BookMySpa', description: 'Premium for partners', prefill: order.prefill, theme: { color: '#2F5D50' },
+        handler: (x) => API.post(`/owner/premium/${r.subscriptionId}/verify`, { mode: 'razorpay', orderId: x.razorpay_order_id, paymentId: x.razorpay_payment_id, signature: x.razorpay_signature }).then(resolve, reject),
+        modal: { ondismiss: () => reject(new Error('Payment cancelled.')) } }).open());
+    }
+    if (!result.success) throw new Error(result.message || 'Payment failed.');
+    celebrate('Welcome to Premium', result.message, () => location.reload());
+  } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+}
+
+// ===================== Dashboard =====================
+async function loadInsights() {
+  const box = document.getElementById('dash');
+  if (box) box.classList.add('loading');
+  try {
+    state.data = await API.get(`/owner/insights?spa=${state.spa}&days=${state.days}`);
+    renderDashboard();
+  } catch (e) {
+    if (e.status === 402) return renderPaywall();
+    toast(e.message, 'error');
+  }
+}
+function renderDashboard() {
+  const d = state.data, k = d.kpis, st = state.prem.status;
+  const rangeName = RANGES.find(r => r[0] === d.range.days)[1];
+  app.innerHTML = `
+  <div class="wrap page-body" id="dash">
+    <div class="ins-head">
+      <div><h1 style="margin:0">Insights</h1>
+        <p class="helper-text" style="margin:4px 0 0">${formatDate(d.range.start)} – ${formatDate(d.range.end)} · <span class="prem-pill">✨ Premium${st.plan === 'trial' ? ' trial' : ''} · ${st.daysLeft} day${st.daysLeft !== 1 ? 's' : ''} left</span></p></div>
+      <div class="ins-filters no-print">
+        ${d.spas.length > 1 ? `<select id="fSpa" aria-label="Spa" onchange="state.spa=this.value;loadInsights()"><option value="all">All my spas</option>${d.spas.map(s => `<option value="${s.id}" ${String(state.spa) === String(s.id) ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
+        <div class="seg-ctl" role="group" aria-label="Period">${RANGES.map(([v, l]) => `<button class="${state.days === v ? 'on' : ''}" onclick="state.days=${v};loadInsights()">${l}</button>`).join('')}</div>
+        <button class="btn small outline" onclick="exportCsv('bookings')">⬇ Bookings</button>
+        <button class="btn small outline" onclick="exportCsv('customers')">⬇ Customers</button>
+        <button class="btn small outline" onclick="window.print()">🖨 Report</button>
+      </div>
+    </div>
+
+    <div class="ins-hero">
+      <div class="hero-num"><span class="helper-text">Revenue from visits in the last ${rangeName}</span>
+        <div class="big" id="heroRev">₹0</div>${deltaHtml(k.revenue.delta)} <span class="helper-text">vs the ${rangeName} before</span></div>
+      <div class="kpis">
+        ${kpi('Visits', k.visits.value, v => Math.round(v).toLocaleString('en-IN'), deltaHtml(k.visits.delta))}
+        ${kpi('Customers', k.customers.value, v => Math.round(v), deltaHtml(k.customers.delta), `${k.customers.new} new · ${k.customers.returning} returning`)}
+        ${kpi('From returning guests', k.returningRevenueShare.value, v => (k.returningRevenueShare.value === null ? '—' : Math.round(v) + '%'), deltaHtml(k.returningRevenueShare.delta, true, ' pts'), 'share of revenue')}
+        ${kpi('Average visit', k.avgTicket.value, v => rupee(v), deltaHtml(k.avgTicket.delta))}
+        ${kpi('Rating', k.rating.value || 0, v => (k.rating.value === null ? '—' : '★ ' + v.toFixed(1)), deltaHtml(k.rating.delta, true, ''), `${k.rating.count} review${k.rating.count !== 1 ? 's' : ''}`)}
+        ${kpi('Cancellations', k.cancelRate.value || 0, v => (k.cancelRate.value === null ? '—' : v.toFixed(1) + '%'), deltaHtml(k.cancelRate.delta, false, ' pts'), `No-shows ${k.noShowRate.value ?? 0}%`)}
+      </div>
+    </div>
+
+    ${d.notes.length ? `<div class="panel ins-notes"><h3>What stands out</h3><ul>${d.notes.map(n => `<li class="note-${n.tone}">${esc(n.text)}</li>`).join('')}</ul></div>` : ''}
+
+    <div class="ins-grid">
+      ${panel('rev', 'Revenue', `per ${d.range.unit}`, 'wide')}
+      ${panel('cust', 'New and returning customers', `per ${d.range.unit}`, 'wide')}
+      ${panel('heat', 'When guests visit', 'visits by day and start time', 'wide')}
+      ${panel('svc', 'Services by revenue', '')}
+      ${panel('ther', 'Visits by therapist', '')}
+      ${panel('lead', 'How far ahead guests book', 'visits by days between booking and appointment')}
+      ${panel('pay', 'How guests paid', 'share of revenue')}
+      ${panel('rating', 'Average rating', 'by month, last 6 months', 'wide')}
+    </div>
+
+    <h2 style="margin:36px 0 6px">Customers</h2>
+    <p class="helper-text" style="margin:0 0 16px">Everyone who has visited ${d.spaId === 'all' ? 'your spas' : 'this spa'}, all-time. Click a group to filter, or a name to see their history.</p>
+    <div class="seg-tiles">${d.segments.map(s => `<button class="seg-tile ${SEG[s.key].cls} ${state.seg === s.key ? 'on' : ''}" onclick="state.seg = state.seg === '${s.key}' ? null : '${s.key}'; renderCustomers()">
+      <span class="seg-count">${s.count}</span><strong>${SEG[s.key].name}</strong><span class="helper-text" style="margin:0">${SEG[s.key].blurb}</span><span class="seg-spend">${rupee(s.spend)} lifetime</span></button>`).join('')}</div>
+    <div class="panel" id="winback"></div>
+    <div class="panel" style="padding:0;overflow:hidden">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--line)" class="no-print"><input id="custQ" placeholder="🔎 Search by name or phone" value="${esc(state.q)}" oninput="state.q=this.value;renderCustomers()"></div>
+      <div id="custTable" style="overflow:auto"></div>
+    </div>
+  </div>`;
+  BMSChart.countUp(document.getElementById('heroRev'), k.revenue.value, rupee);
+  document.querySelectorAll('[data-count]').forEach(n => BMSChart.countUp(n, Number(n.dataset.count), window['fmt_' + n.id]));
+  drawCharts();
+  renderCustomers();
+}
+let kpiN = 0;
+function kpi(label, value, fmt, delta, sub = '') {
+  const id = 'k' + (kpiN++); window['fmt_' + id] = fmt;
+  return `<div class="kpi"><span class="kpi-label">${label}</span><span class="kpi-value" id="${id}" data-count="${value || 0}">${fmt(0)}</span>${delta}${sub ? `<span class="kpi-sub">${sub}</span>` : ''}</div>`;
+}
+function panel(id, title, sub, cls = '') {
+  return `<section class="panel chart-panel ${cls}"><div class="chart-head"><div><h3>${title}</h3>${sub ? `<span class="helper-text" style="margin:0">${sub}</span>` : ''}</div>
+    <button class="link-btn no-print" onclick="toggleTable('${id}', this)">Table</button></div><div class="chart-body" id="c_${id}"></div><div class="chart-tablewrap" id="t_${id}" hidden></div></section>`;
+}
+const tables = {};
+function toggleTable(id, btn) {
+  const t = document.getElementById('t_' + id), c = document.getElementById('c_' + id);
+  const show = t.hidden; t.hidden = !show; c.hidden = show; btn.textContent = show ? 'Chart' : 'Table';
+  if (show) BMSChart.table(t, tables[id][0], tables[id][1]);
+}
+function drawCharts() {
+  const d = state.data, C = BMSChart.C;
+  const labels = d.series.map(s => s.label);
+  BMSChart.columns(document.getElementById('c_rev'), { labels, series: [{ name: 'Revenue', color: C[0], values: d.series.map(s => s.revenue) }], format: rupeeC });
+  tables.rev = [['Period', 'Revenue', 'Visits'], d.series.map(s => [s.label, rupee(s.revenue), s.visits])];
+  const custSeries = [{ name: 'Returning', color: C[0], values: d.series.map(s => s.returningCustomers) }, { name: 'New', color: C[1], values: d.series.map(s => s.newCustomers) }];
+  BMSChart.columns(document.getElementById('c_cust'), { labels, series: custSeries, format: v => String(Math.round(v)) });
+  BMSChart.legend(document.getElementById('c_cust'), custSeries);
+  tables.cust = [['Period', 'Returning', 'New'], d.series.map(s => [s.label, s.returningCustomers, s.newCustomers])];
+  BMSChart.heatmap(document.getElementById('c_heat'), { rows: d.heatmap.days, cols: d.heatmap.hours, values: d.heatmap.values });
+  tables.heat = [['Day', ...d.heatmap.hours], d.heatmap.days.map((day, i) => [day, ...d.heatmap.values[i]])];
+  const empty = (id, msg) => { document.getElementById('c_' + id).innerHTML = `<p class="helper-text" style="padding:20px 0">${msg}</p>`; };
+  if (d.services.length) BMSChart.hbars(document.getElementById('c_svc'), { items: d.services.map(s => ({ name: s.name, value: s.revenue, visits: s.visits })), format: rupeeC, sub: it => `${it.visits} visits` }); else empty('svc', 'No visits in this period.');
+  tables.svc = [['Service', 'Revenue', 'Visits'], d.services.map(s => [s.name, rupee(s.revenue), s.visits])];
+  if (d.therapists.length) BMSChart.hbars(document.getElementById('c_ther'), { items: d.therapists.map(s => ({ name: s.name, value: s.visits, revenue: s.revenue })), format: v => String(v), sub: it => rupee(it.revenue), color: C[3] }); else empty('ther', 'Add therapists to your spa to see how bookings are shared across your team.');
+  tables.ther = [['Therapist', 'Visits', 'Revenue'], d.therapists.map(s => [s.name, s.visits, rupee(s.revenue)])];
+  BMSChart.columns(document.getElementById('c_lead'), { labels: d.lead.map(l => l.name), series: [{ name: 'Visits', color: C[3], values: d.lead.map(l => l.visits) }], format: v => String(Math.round(v)), height: 200 });
+  tables.lead = [['Booked', 'Visits'], d.lead.map(l => [l.name, l.visits])];
+  BMSChart.share(document.getElementById('c_pay'), { items: d.payMix.map((p, i) => ({ name: p.name, value: p.value, color: C[i] })), format: rupee });
+  tables.pay = [['Paid by', 'Revenue'], d.payMix.map(p => [p.name, rupee(p.value)])];
+  if (d.ratings.some(r => r.value !== null)) BMSChart.line(document.getElementById('c_rating'), { labels: d.ratings.map(r => r.label), values: d.ratings.map(r => r.value), min: 1, max: 5, format: v => '★ ' + v.toFixed(1), color: C[1] }); else empty('rating', 'No reviews in the last 6 months yet.');
+  tables.rating = [['Month', 'Average', 'Reviews'], d.ratings.map(r => [r.label, r.value ?? '—', r.count])];
+}
+
+function waLink(c) {
+  const first = (c.name || '').split(' ')[0];
+  const spa = state.data.spas.length === 1 || state.spa !== 'all' ? (state.data.spas.find(s => String(s.id) === String(state.spa)) || state.data.spas[0]).name : 'us';
+  const msg = `Hi ${first}, we miss you at ${spa}! It’s been a while since your last ${c.favourite}. ${state.coupon ? `Use code ${state.coupon} for a little thank-you on your next visit. ` : ''}Book any time on BookMySpa: ${location.origin}`;
+  const ph = String(c.phone || '').replace(/\D/g, '');
+  return ph ? `https://wa.me/${ph.length === 10 ? '91' + ph : ph}?text=${encodeURIComponent(msg)}` : null;
+}
+async function renderWinback() {
+  const box = document.getElementById('winback');
+  const list = state.data.customers.filter(c => c.segment === 'at_risk' || c.segment === 'lapsed').slice(0, 8);
+  if (!list.length) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  let coupons = [];
+  try { if (state.data.spas.length) coupons = (await API.get(`/owner/spas/${state.spa !== 'all' ? state.spa : state.data.spas[0].id}/coupons`)).coupons.filter(c => c.active); } catch {}
+  box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
+      <div><h3 style="margin:0">Win back</h3><p class="helper-text" style="margin:2px 0 0">Guests who are overdue — send a personal WhatsApp in one tap.</p></div>
+      <label style="margin:0;min-width:220px">Include a coupon <select onchange="state.coupon=this.value;renderWinback()"><option value="">No coupon</option>${coupons.map(c => `<option ${state.coupon === c.code ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}</select></label></div>
+    <div class="wb-list">${list.map(c => { const link = waLink(c); return `<div class="wb-item"><div><strong>${esc(c.name)}</strong><span class="helper-text" style="margin:0">Last visit ${formatDate(c.last_visit)} · ${c.days_since} days ago${c.avg_gap_days ? ` · usually every ${c.avg_gap_days} days` : ''}</span></div>
+      ${link ? `<a class="btn small gold" target="_blank" rel="noopener" href="${link}">WhatsApp</a>` : '<span class="helper-text">No phone</span>'}</div>`; }).join('')}</div>`;
+}
+function renderCustomers() {
+  document.querySelectorAll('.seg-tile').forEach(t => t.classList.toggle('on', t.classList.contains(state.seg ? SEG[state.seg].cls : '__')));
+  const q = state.q.trim().toLowerCase();
+  const rows = state.data.customers.filter(c => (!state.seg || c.segment === state.seg) && (!q || (c.name || '').toLowerCase().includes(q) || String(c.phone || '').includes(q)));
+  const el = document.getElementById('custTable');
+  el.innerHTML = rows.length ? `<table class="cust-table"><thead><tr><th>Customer</th><th>Group</th><th class="num">Visits</th><th class="num">Spent</th><th>Last visit</th><th>Usually every</th><th>Favourite</th><th>Next booking</th></tr></thead><tbody>
+    ${rows.map(c => `<tr tabindex="0" onclick="openCustomer(${c.id})" onkeydown="if(event.key==='Enter')openCustomer(${c.id})"><td><strong>${esc(c.name)}</strong><div class="helper-text" style="margin:0">${esc(c.phone || '')}</div></td>
+      <td><span class="seg-badge ${SEG[c.segment].cls}">${SEG[c.segment].name}</span></td><td class="num">${c.visits}</td><td class="num">${rupee(c.spend)}</td>
+      <td>${formatDate(c.last_visit)}<div class="helper-text" style="margin:0">${c.days_since} days ago</div></td><td>${c.avg_gap_days ? c.avg_gap_days + ' days' : '—'}</td><td>${esc(c.favourite)}</td><td>${c.next_visit ? formatDate(c.next_visit) : '—'}</td></tr>`).join('')}</tbody></table>`
+    : `<p class="helper-text" style="padding:18px">${state.data.customers.length ? 'No customers match.' : 'Customers appear here after their first visit.'}</p>`;
+  renderWinback();
+}
+async function openCustomer(id) {
+  const c = state.data.customers.find(x => x.id === id);
+  const body = document.getElementById('custBody');
+  body.innerHTML = '<p>Loading…</p>';
+  document.getElementById('custModal').classList.add('open');
+  try {
+    const { bookings } = await API.get(`/owner/insights/customers/${id}`);
+    const link = waLink(c);
+    body.innerHTML = `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div><h2 style="margin:0">${esc(c.name)}</h2><p class="helper-text" style="margin:4px 0 0">${esc(c.phone || '')}${c.email ? ' · ' + esc(c.email) : ''}</p></div>
+      <button class="btn small outline" onclick="document.getElementById('custModal').classList.remove('open')">Close</button></div>
+      <div class="kpis" style="margin:16px 0">
+        <div class="kpi"><span class="kpi-label">Visits</span><span class="kpi-value">${c.visits}</span></div>
+        <div class="kpi"><span class="kpi-label">Spent</span><span class="kpi-value">${rupee(c.spend)}</span></div>
+        <div class="kpi"><span class="kpi-label">Usually every</span><span class="kpi-value">${c.avg_gap_days ? c.avg_gap_days + 'd' : '—'}</span></div>
+        <div class="kpi"><span class="kpi-label">Customer since</span><span class="kpi-value" style="font-size:18px">${formatDate(c.first_visit)}</span></div>
+      </div>
+      <span class="seg-badge ${SEG[c.segment].cls}">${SEG[c.segment].name}</span> <span class="helper-text">Favourite: ${esc(c.favourite)}</span>
+      ${link ? `<a class="btn small gold" style="float:right" target="_blank" rel="noopener" href="${link}">WhatsApp</a>` : ''}
+      <h4 style="margin:20px 0 6px">History</h4>
+      ${bookings.map(b => `<div class="chip-row"><span><strong>${formatDate(b.booking_date)}</strong> ${formatTime(b.start_time)} · ${esc(b.service_name)}${b.therapist_name ? ' · ' + esc(b.therapist_name) : ''}<br>
+        <span class="helper-text" style="margin:0">${esc(b.booking_ref || '')} · ${esc(b.spa_name)}${b.rating ? ' · ' + '★'.repeat(b.rating) : ''}</span></span>
+        <span style="text-align:right"><strong>${rupee(b.amount)}</strong><br><span class="badge ${b.status}">${b.cancel_reason === 'no_show' ? 'No-show' : b.status}</span></span></div>`).join('')}`;
+  } catch (e) { body.innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+async function exportCsv(type) {
+  try {
+    const res = await fetch(`/api/owner/insights/export?type=${type}&spa=${state.spa}`, { headers: { Authorization: 'Bearer ' + API.token() } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Export failed.');
+    const blob = await res.blob();
+    const name = (res.headers.get('Content-Disposition') || '').match(/filename="(.+?)"/)?.[1] || `bookmyspa-${type}.csv`;
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('Downloaded. Opens in Excel or Google Sheets.');
+  } catch (e) { toast(e.message, 'error'); }
+}
+let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (state.data && document.getElementById('dash')) drawCharts(); }, 250); });
+boot();
+</script>
+</body>
+</html>

@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { db, hashPassword, verifyPassword, recomputeSpaRating, assignBookingRef } = require('./db');
 const os = require('node:os');
 const backupMod = require('./backup');
+const premium = require('./insights');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
@@ -634,6 +635,8 @@ async function handleApi(req, res, pathname, query) {
         const paymentEntity = event.payload?.payment?.entity;
         const purchaseMatch = /^purchase_(\d+)$/.exec(receipt || '');
         if (purchaseMatch) activatePurchase(Number(purchaseMatch[1]), paymentEntity && paymentEntity.id);
+        const premiumMatch = /^premium_(\d+)$/.exec(receipt || '');
+        if (premiumMatch) premium.activate(Number(premiumMatch[1]), paymentEntity && paymentEntity.id);
         const bookingIdMatch = /^booking_(\d+)$/.exec(receipt || '');
         if (bookingIdMatch) {
           const bookingId = Number(bookingIdMatch[1]);
@@ -2094,6 +2097,114 @@ async function handleApi(req, res, pathname, query) {
     }
 
     // ---------------- OWNER: EARNINGS & SETTLEMENTS ----------------
+    // ---------------- PREMIUM (owner) ----------------
+    if (parts[1] === 'owner' && parts[2] === 'premium' && parts.length === 3 && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const history = db.prepare("SELECT id, plan, amount, starts_on, ends_on, status, created_at FROM premium_subscriptions WHERE owner_id = ? AND status = 'active' ORDER BY id DESC").all(user.id);
+      return sendJSON(res, 200, { status: premium.premiumStatus(user.id), settings: premium.getSettings(), onlinePayments: onlinePaymentsAvailable(), history });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'premium' && parts[3] === 'subscribe' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const st = premium.getSettings(), body = await parseBody(req);
+      if (!st.enabled) return sendJSON(res, 400, { error: 'Premium isn’t available right now.' });
+      if (body.plan === 'trial') {
+        if (!st.trialDays) return sendJSON(res, 400, { error: 'There’s no free trial right now.' });
+        if (!premium.premiumStatus(user.id).trialAvailable) return sendJSON(res, 409, { error: 'You’ve already used your free trial.' });
+        const sub = premium.activate(premium.createSub(user.id, 'trial', { days: st.trialDays }));
+        return sendJSON(res, 201, { message: `Premium is on — your ${st.trialDays}-day free trial ends ${sub.ends_on}.`, active: true, status: premium.premiumStatus(user.id) });
+      }
+      if (!['monthly', 'yearly'].includes(body.plan)) return sendJSON(res, 400, { error: 'Choose monthly or yearly.' });
+      if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: 'Online payment isn’t switched on yet. Contact BookMySpa to activate Premium.' });
+      const amount = body.plan === 'monthly' ? st.priceMonthly : st.priceYearly;
+      const id = premium.createSub(user.id, body.plan, { amount, months: body.plan === 'monthly' ? 1 : 12 });
+      return sendJSON(res, 201, { subscriptionId: id, amount });
+    }
+    if (parts[1] === 'owner' && parts[2] === 'premium' && ['checkout', 'verify'].includes(parts[4]) && req.method === 'POST') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      const sub = db.prepare('SELECT * FROM premium_subscriptions WHERE id = ? AND owner_id = ?').get(parts[3], user.id);
+      if (!sub) return sendJSON(res, 404, { error: 'Subscription not found.' });
+      if (sub.status !== 'pending') return sendJSON(res, 409, { error: 'This subscription is already paid.' });
+      if (parts[4] === 'checkout') {
+        try {
+          const order = await gateway.createOrder({ amount: sub.amount, receipt: `premium_${sub.id}` });
+          const u = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+          return sendJSON(res, 200, { ...order, prefill: { name: u.name, email: u.email, contact: u.phone } });
+        } catch (e) { return sendJSON(res, 502, { error: 'Could not start checkout: ' + e.message }); }
+      }
+      const body = await parseBody(req);
+      const result = gateway.verifyPayment({ mode: body.mode, orderId: body.orderId, paymentId: body.paymentId, signature: body.signature });
+      if (!result.success) return sendJSON(res, 402, { success: false, message: result.message });
+      const act = premium.activate(sub.id, result.transactionRef);
+      return sendJSON(res, 200, { success: true, message: `Premium is on until ${act.ends_on}.`, status: premium.premiumStatus(user.id) });
+    }
+
+    // ---------------- INSIGHTS (Premium only) ----------------
+    if (parts[1] === 'owner' && parts[2] === 'insights' && req.method === 'GET') {
+      const user = requireAuth(req, res, ['owner']);
+      if (!user) return;
+      if (!premium.premiumStatus(user.id).active) return sendJSON(res, 402, { error: 'Insights are part of BookMySpa Premium.', premium: false });
+      const spaParam = query.get('spa') || 'all';
+      if (spaParam !== 'all' && !db.prepare('SELECT 1 FROM spas WHERE id = ? AND owner_id = ?').get(spaParam, user.id)) return sendJSON(res, 404, { error: 'Spa not found.' });
+      if (parts[3] === 'customers' && parts[4]) {
+        const hist = premium.customerHistory(user.id, Number(parts[4]));
+        if (!hist.length) return sendJSON(res, 404, { error: 'Customer not found.' });
+        return sendJSON(res, 200, { bookings: hist });
+      }
+      if (parts[3] === 'export') {
+        const type = query.get('type') === 'customers' ? 'customers' : 'bookings';
+        const body = premium.exportCsv(user.id, spaParam, type);
+        res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="bookmyspa-${type}-${premium.todayLocal()}.csv"` });
+        return res.end(body);
+      }
+      return sendJSON(res, 200, premium.insights(user.id, spaParam, query.get('days')));
+    }
+
+    // ---------------- PREMIUM (admin) ----------------
+    if (parts[1] === 'admin' && parts[2] === 'premium' && parts.length === 3 && ['GET', 'PUT'].includes(req.method)) {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      if (req.method === 'PUT') {
+        const body = await parseBody(req), next = {};
+        if (body.enabled !== undefined) next.enabled = !!body.enabled;
+        for (const [k, lo, hi] of [['priceMonthly', 1, 1000000], ['priceYearly', 1, 10000000], ['trialDays', 0, 90]]) {
+          if (body[k] === undefined) continue;
+          const v = Number(body[k]);
+          if (!Number.isInteger(v) || v < lo || v > hi) return sendJSON(res, 400, { error: k === 'trialDays' ? 'Trial must be 0–90 days.' : 'Enter a valid price in whole rupees.' });
+          next[k] = v;
+        }
+        premium.saveSettings(next);
+        return sendJSON(res, 200, { message: 'Premium settings saved. New prices apply to new purchases.', settings: premium.getSettings() });
+      }
+      const today = premium.todayLocal();
+      const owners = db.prepare("SELECT u.id, u.name, u.email, u.phone, (SELECT COUNT(*) FROM spas WHERE owner_id = u.id) AS spas FROM users u WHERE u.role = 'owner' ORDER BY u.name").all()
+        .map((o) => ({ ...o, premium: premium.premiumStatus(o.id) }));
+      const subs = db.prepare("SELECT p.*, u.name AS owner_name FROM premium_subscriptions p JOIN users u ON u.id = p.owner_id WHERE p.status = 'active' ORDER BY p.id DESC LIMIT 200").all();
+      const revenue = round2(db.prepare("SELECT COALESCE(SUM(amount),0) v FROM premium_subscriptions WHERE status = 'active'").get().v);
+      return sendJSON(res, 200, { settings: premium.getSettings(), owners, subscriptions: subs, revenue, activeCount: owners.filter((o) => o.premium.active).length, today });
+    }
+    if (parts[1] === 'admin' && parts[2] === 'premium' && parts[3] === 'grant' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const body = await parseBody(req);
+      const owner = db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'owner'").get(body.owner_id);
+      if (!owner) return sendJSON(res, 400, { error: 'Choose a spa owner.' });
+      const months = Number(body.months);
+      if (!Number.isInteger(months) || months < 1 || months > 24) return sendJSON(res, 400, { error: 'Grant between 1 and 24 months.' });
+      const sub = premium.activate(premium.createSub(owner.id, 'grant', { months, note: String(body.note || '').slice(0, 200) }));
+      return sendJSON(res, 201, { message: `${owner.name} has Premium until ${sub.ends_on}.` });
+    }
+    if (parts[1] === 'admin' && parts[2] === 'premium' && parts[4] === 'cancel' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const sub = db.prepare("SELECT * FROM premium_subscriptions WHERE id = ? AND status = 'active'").get(parts[3]);
+      if (!sub) return sendJSON(res, 404, { error: 'Subscription not found.' });
+      db.prepare("UPDATE premium_subscriptions SET status = 'void' WHERE id = ?").run(sub.id);
+      return sendJSON(res, 200, { message: 'Subscription cancelled. Refunds, if any, are handled outside the platform.' });
+    }
+
     if (parts[1] === 'owner' && parts[2] === 'earnings' && req.method === 'GET') {
       const user = requireAuth(req, res, ['owner']);
       if (!user) return;
@@ -2355,6 +2466,8 @@ async function handleApi(req, res, pathname, query) {
                    lastOffsiteAt: st.lastOffsite ? st.lastOffsite.at : null, lastOffsiteError: st.lastOffsiteError ? st.lastOffsiteError.message : null,
                    lastError: st.lastError ? st.lastError.message : null, restoreError: st.restoreError ? st.restoreError.message : null };
         })(),
+        premiumRevenue: round2(db.prepare("SELECT COALESCE(SUM(amount),0) v FROM premium_subscriptions WHERE status = 'active'").get().v),
+        premiumActive: db.prepare("SELECT COUNT(DISTINCT owner_id) c FROM premium_subscriptions WHERE status = 'active' AND starts_on <= ? AND ends_on >= ?").get(localNow().date, localNow().date).c,
         giftCardLiability: round2(db.prepare("SELECT COALESCE(SUM(balance),0) v FROM gift_cards WHERE status = 'active'").get().v),
         packageLiability: round2(db.prepare("SELECT COALESCE(SUM((sessions_total - sessions_used) * per_session_value),0) v FROM customer_packages WHERE status = 'active'").get().v),
         featuredRevenue: round2(db.prepare('SELECT COALESCE(SUM(amount),0) a FROM featured_placements WHERE cancelled = 0').get().a),

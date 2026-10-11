@@ -406,6 +406,57 @@ function seedDemoData(mkUser) {
   db.prepare('INSERT INTO packages (spa_id, service_id, name, sessions, price, validity_days) VALUES (?,?,?,?,?,?)')
     .run(spa1, svc('Swedish Full Body Massage'), '5 Swedish massages', 5, 7499, 180);
 
+  // ~6 months of realistic visit history for Serene Bliss, so Insights has something to show (development only)
+  if (process.env.SEED_DEMO_HISTORY !== 'off') {
+    let seedN = 7; const rnd = () => ((seedN = (seedN * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const names = ['Aarav Mehta', 'Diya Reddy', 'Kabir Shah', 'Ananya Rao', 'Vihaan Gupta', 'Isha Nair', 'Arjun Pillai', 'Meghna Iyer', 'Rohan Das', 'Sneha Kulkarni',
+      'Aditya Verma', 'Pooja Menon', 'Karan Malhotra', 'Riya Bose', 'Siddharth Jain', 'Tara Kapoor', 'Nikhil Chawla', 'Lakshmi Prasad', 'Farhan Ali', 'Neha Sinha',
+      'Varun Bhat', 'Kavya Shetty', 'Manish Arora', 'Divya Joshi', 'Harsh Vardhan', 'Zoya Khan', 'Rahul Saxena', 'Anjali Desai', 'Gautam Rao', 'Shreya Ghosh', 'Imran Qureshi', 'Nandini Pillai'];
+    const { hash: dh, salt: ds } = hashPassword('demo1234');
+    const ids = names.map((n, i) => Number(db.prepare("INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role) VALUES (?,?,?,1,?,?,'customer')")
+      .run(n, n.toLowerCase().replace(/[^a-z]/g, '.') + '@example.com', '9100000' + String(100 + i), dh, ds).lastInsertRowid));
+    const svcs = db.prepare('SELECT id, price, discount_percent, duration_minutes FROM services WHERE spa_id = ?').all(spa1);
+    const ther = db.prepare('SELECT t.id, ts.service_id FROM therapists t JOIN therapist_services ts ON ts.therapist_id = t.id WHERE t.spa_id = ?').all(spa1);
+    const weights = [3, 2, 2.4, 1.2]; // service popularity
+    const pickSvc = () => { let r = rnd() * weights.reduce((a, b) => a + b, 0); for (let i = 0; i < svcs.length; i++) { r -= weights[i] || 1; if (r <= 0) return svcs[i]; } return svcs[0]; };
+    const today = new Date(Date.now() + 330 * 60000);
+    const ins = db.prepare(`INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, status, payment_status, payment_mode, therapist_id, therapist_choice, commission_percent, commission_amount, cancel_reason, created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,10,?,?,?)`);
+    ids.forEach((cid, i) => {
+      // loyal regulars visit every ~2-4 weeks; occasional customers a few times; some have drifted away
+      const kind = i < 8 ? 'regular' : i < 19 ? 'occasional' : i < 26 ? 'one' : 'lapsed';
+      const firstAgo = Math.floor(20 + rnd() * 320);
+      let ago = firstAgo;
+      const stopAgo = kind === 'lapsed' ? 95 + Math.floor(rnd() * 40) : kind === 'one' ? firstAgo : 1;
+      while (ago >= stopAgo && ago >= 1) {
+        const d = new Date(today.getTime() - ago * 86400000); const dow = d.getUTCDay();
+        const date = d.toISOString().slice(0, 10);
+        const hour = (dow === 0 || dow === 6) ? 11 + Math.floor(rnd() * 8) : [12, 17, 18, 18, 19, 19, 20, 14][Math.floor(rnd() * 8)];
+        const sv = pickSvc(); const amount = Math.round(sv.price * (1 - (sv.discount_percent || 0) / 100));
+        const st = String(hour).padStart(2, '0') + ':00', em = hour * 60 + sv.duration_minutes;
+        const et = String(Math.floor(em / 60)).padStart(2, '0') + ':' + String(em % 60).padStart(2, '0');
+        const tl = ther.filter((t) => t.service_id === sv.id); const t = tl.length ? tl[Math.floor(rnd() * tl.length)].id : null;
+        const roll = rnd(); const status = roll < 0.06 ? 'cancelled' : 'completed'; const ns = roll >= 0.06 && roll < 0.09;
+        const online = rnd() < 0.45;
+        const created = new Date(d.getTime() - Math.floor(rnd() * 6) * 86400000 - 330 * 60000).toISOString().replace('T', ' ').slice(0, 19);
+        ins.run(cid, spa1, sv.id, date, st, et, amount, ns ? 'cancelled' : status, online ? 'paid' : ns || status === 'cancelled' ? 'unpaid' : 'paid', online ? 'online' : 'pay_at_venue',
+                t, t ? 'any' : null, Math.round(amount * 10) / 100, ns ? 'no_show' : status === 'cancelled' ? 'customer' : null, created);
+        if (kind === 'one') break;
+        ago -= kind === 'regular' ? 8 + Math.floor(rnd() * 14) : 22 + Math.floor(rnd() * 40);
+      }
+      // regulars and some occasionals already have their next visit booked
+      if (kind === 'regular' || (kind === 'occasional' && rnd() < 0.4)) {
+        const d = new Date(today.getTime() + (2 + Math.floor(rnd() * 12)) * 86400000).toISOString().slice(0, 10);
+        ins.run(cid, spa1, svcs[0].id, d, '18:00', '19:00', 1614, 'confirmed', 'unpaid', 'pay_at_venue', null, null, 161.4, null, today.toISOString().replace('T', ' ').slice(0, 19));
+      }
+    });
+    // a handful of reviews spread over the months
+    const rv = db.prepare("SELECT b.id, b.customer_id, b.booking_date FROM bookings b WHERE b.spa_id = ? AND b.status = 'completed' AND b.customer_id != ? ORDER BY b.id").all(spa1, cust1);
+    rv.filter((_, i) => i % 6 === 0).forEach((b, i) => db.prepare("INSERT INTO reviews (booking_id, spa_id, customer_id, rating, comment, created_at) VALUES (?,?,?,?,?,?)")
+      .run(b.id, spa1, b.customer_id, [5, 4, 5, 5, 3, 4, 5][i % 7], null, b.booking_date + ' 20:00:00'));
+    recomputeSpaRating(spa1);
+  }
+
   console.log('Seed complete. Demo logins:');
   console.log('  admin@bookmyspa.demo / admin123 (admin)');
   console.log('  owner1@bookmyspa.demo / owner123 (spa owner - Hyderabad spas)');

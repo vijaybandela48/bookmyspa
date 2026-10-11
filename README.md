@@ -172,6 +172,36 @@ How it then behaves:
 - These bookings drop out of the manual settlement ledger.
 - Pay-at-spa commission, gift-card and package money still settle manually as before.
 
+## Premium Insights for spa owners
+
+A paid add-on that spa owners buy from the partner portal (✨ Insights). You control it in **Admin → ✨ Premium**:
+- **Turn it on or off** and set the **monthly price**, **yearly price** and **free-trial length** (0 means no trial). New prices apply to new purchases only.
+- **Give Premium free** to any owner for 1–24 months, e.g. founding partners. Grants stack on top of any time they already have.
+- **See** every owner's status, every subscription, and total Premium revenue. **Cancel** a subscription to remove access immediately; refunds are handled outside the platform.
+
+Owners pay online like customers do (Razorpay; the webhook also activates payments if the browser closes). Each trial can be used once per owner. Paid time is added after any remaining time, so nobody loses days.
+
+**What owners get:**
+- **Headline numbers for the chosen period** (30 days, 90 days, 6 months or 12 months), each compared with the period before:
+  - revenue, visits and customers (new vs returning)
+  - share of revenue from returning guests
+  - average visit value, rating, and cancellation and no-show rates
+- **What stands out:** plain-language highlights such as top service, loyalty, busiest time, quietest day (with a coupon tip) and guests to win back.
+- **Animated charts:**
+  - revenue over time
+  - new vs returning customers
+  - a weekday × hour busy-time heatmap
+  - services by revenue and visits by therapist
+  - how far ahead guests book and how they paid
+  - rating by month
+
+  Every chart has a hover tooltip and a **Table** view. The colours are checked for colour-blind readability.
+- **Customer relationships:** every guest's visits, lifetime spend, first and last visit, how often they usually come, favourite treatment and next booking. Guests are grouped as **VIP** (top 10% by spend), **Regular**, **New**, **At risk** (overdue for their usual rhythm) and **Lapsed** (90+ days). Click anyone for their full history.
+- **Win back:** a one-tap personal WhatsApp to at-risk and lapsed guests, optionally including one of the owner's coupon codes.
+- **Exports:** bookings and customer lists as CSV (opens in Excel or Google Sheets; protected against spreadsheet-formula tricks), plus a printable report.
+
+Owners only ever see data from their own spas. Development databases include ~6 months of demo visits for Serene Bliss so Insights has something to show; set `SEED_DEMO_HISTORY=off` to skip it. Production never gets demo data.
+
 ## Design
 
 "Steam & stone":
@@ -182,7 +212,7 @@ How it then behaves:
 
 ## Tests
 
-`npm test` runs the automated suite: 135 checks covering portals, security, bookings, commission, closures, walk-in blocks, cancellation windows, rescheduling, profiles, admin controls, reminders, therapists, packages, gift cards, GST invoices, backups and Razorpay Route payouts (against a stand-in Razorpay server). It runs on a temporary copy with a fresh demo database and never touches your real data.
+`npm test` runs the automated suite: 165 checks covering portals, security, bookings, commission, closures, walk-in blocks, cancellation windows, rescheduling, profiles, admin controls, reminders, therapists, packages, gift cards, GST invoices, Premium subscriptions and Insights, backups and Razorpay Route payouts (against a stand-in Razorpay server). It runs on a temporary copy with a fresh demo database and never touches your real data.
 
 ## Booking IDs, password reset, backups & safe updates
 
