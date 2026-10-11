@@ -16,8 +16,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DATA_DIR, 'spa_platform.db');
+const { DATA_DIR, DB_PATH } = require('./datadir');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const STATUS_FILE = path.join(BACKUP_DIR, 'status.json');
 const TZ_OFFSET_MINUTES = Number(process.env.TZ_OFFSET_MINUTES || 330);

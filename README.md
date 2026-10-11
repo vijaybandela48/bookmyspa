@@ -91,6 +91,8 @@ each feature on automatically.
 | `MSG91_REMINDER_TEMPLATE_ID` | Appointment-reminder SMS (~2 h before). Flow variables: `##name## ##service## ##spa## ##time## ##ref##` |
 | `MSG91_WHATSAPP_REMINDER_TEMPLATE` | Appointment-reminder WhatsApp template, 5 body variables: name, service, spa, time, directions link |
 | `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (+ optional `BACKUP_S3_REGION` default `auto`, `BACKUP_S3_PREFIX`) | Optional offsite copy of every backup (Cloudflare R2, Backblaze B2, AWS S3…) |
+| `DATA_DIR` | Optional: where the database, photos and backups live. By default the app uses Railway's attached volume (`RAILWAY_VOLUME_MOUNT_PATH`), or `./data` locally |
+| `ALLOW_NEW_DATABASE=yes` | Only for a brand-new site: lets production start with an empty database (remove after the first deploy) |
 | `RESTORE_BACKUP` / `RESTORE_OFFSITE_KEY` | One-time restore of the database; remove after use (see Backups) |
 
 **MSG91 setup:** India requires DLT registration. Register your business and
@@ -237,6 +239,7 @@ Owners only ever see data from their own spas. Development databases include ~6 
   - A file that isn't a healthy BookMySpa database is refused, and the server keeps running on your existing data.
   - If the variable is left set, it won't re-apply on later restarts.
   - If the whole volume was lost: create a new volume mounted at `/app/data`, then restore with `RESTORE_OFFSITE_KEY`.
+- **Production refuses to start on an empty database.** If the volume is missing or mounted somewhere else, the app stops with a clear message in the Railway logs instead of showing customers an empty site. The startup log always prints which data folder is in use.
 - **Updates never touch existing data:**
   - An automatic pre-update snapshot is saved before every start (see Backups).
   - All database changes are additive: new tables and columns only, never deletes or rewrites.

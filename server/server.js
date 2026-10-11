@@ -7,7 +7,7 @@ const backup = require('./backup');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./datadir');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

@@ -10,7 +10,7 @@ const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
 const { checkRateLimit, checkRateLimitByKey } = require('./rateLimit');
 
-const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads', 'spas');
+const UPLOADS_DIR = path.join(require('./datadir').DATA_DIR, 'uploads', 'spas');
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB raw body cap (covers ~15MB file as base64)
 
 // Fields that must reach the server byte-for-byte (secrets, signatures, file data).
