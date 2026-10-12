@@ -51,6 +51,7 @@ async function load() {
         ${t ? row('Taxable value', money(t.taxable)) + (t.igst !== undefined ? row(`IGST ${t.rate}%`, money(t.igst)) : row(`CGST ${t.rate / 2}%`, money(t.cgst)) + row(`SGST ${t.rate / 2}%`, money(t.sgst))) : ''}
         <tr class="total"><td>Total</td><td style="text-align:right" class="num">${money(v.total)}</td></tr>
         ${(v.paid_by || []).map(p => row('Paid — ' + esc(p.method), money(p.amount))).join('')}
+        ${v.platform_fee ? row('BookMySpa booking fee (charged by BookMySpa, not part of this bill)', money(v.platform_fee)) : ''}
       </tbody></table>
       <p class="helper-text" style="margin-top:18px">${esc(v.note || '')}${v.facilitator ? '<br>' + esc(v.facilitator) : ''}</p>`;
   } catch (e) { el.innerHTML = `<p>${esc(e.message)}</p>`; }

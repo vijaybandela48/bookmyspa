@@ -259,6 +259,27 @@ Owners only ever see data from their own spas. Development databases include ~6 
   - Owners see the same figures and full history on their Earnings tab.
 - **Enforcement:** if a spa doesn't settle, switch it to **Require online** so all its new bookings are prepaid.
 
+## Advance deposit ("reserve with ₹199") & booking fee
+
+Admin → Commission & payouts → **Advance & booking fee**.
+
+- **Advance:** the customer pays a small amount online to hold the slot and pays the rest at the spa.
+  - The amount is a fixed ₹ value (default ₹199) or a % of the price. It is **never less than the platform commission**, so commission is collected even when the balance is paid in cash. If the commission is higher than ₹199, the advance rises to match it.
+  - **Optional** (default): checkout offers *Pay in full online*, *Reserve with advance* and *Pay at the spa*. **Required**: no booking without paying something online. **Off**: advance not offered.
+  - Each spa can override the setting and the amount (Advance column → Change). Spas set to "Online only" never get the advance or pay-at-spa options.
+  - If online payments aren't live yet, "Required" falls back to pay at the spa so bookings never stop.
+- **Money flow:**
+  - The advance is held by BookMySpa and paid to the spa at settlement; commission is charged on the full price.
+  - The owner's **Mark as paid** records only the balance collected at the counter.
+- **No-show:** the owner taps *Customer didn't come*; the advance is kept and paid to the spa minus commission on that amount.
+- **Cancellations:** a cancellation by the customer within the free window, or by the spa, refunds everything paid online, including the fee, automatically.
+  - A payment that arrives after the 10-minute hold expired is refunded automatically.
+  - Failed refunds are flagged on the admin dashboard and the Bookings tab, with a *Refunded manually* button.
+- **Booking fee:** a flat ₹ amount (default ₹0, max ₹500) added to every booking paid online, in full or as an advance.
+  - It's platform revenue, never part of the spa's settlement.
+  - It's shown on the invoice as a separate BookMySpa charge, and totalled on the admin dashboard.
+- Existing bookings are unaffected: the new columns default to 0 / empty.
+
 ## What's included (working, end-to-end)
 
 **Customer side**

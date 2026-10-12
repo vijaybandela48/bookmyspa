@@ -811,6 +811,8 @@ async function removeService(id) {
 }
 
 const statusLabel = { pending_payment: 'Awaiting payment', confirmed: 'Confirmed', cancelled: 'Cancelled', completed: 'Completed' };
+// What the spa still has to collect at the counter (after gift card and any advance paid online).
+const balanceDue = b => Math.round((b.amount - (b.giftcard_amount || 0) - (b.deposit_status === 'paid' ? b.deposit_amount : 0)) * 100) / 100;
 
 async function loadOwnerBookings() {
   const el = document.getElementById('ownerBookings');
@@ -828,7 +830,7 @@ async function loadOwnerBookings() {
     const pendingCollection = bookings.filter(b =>
       b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' && ['confirmed', 'completed'].includes(b.status)
     );
-    const pendingTotal = pendingCollection.reduce((sum, b) => sum + b.amount, 0);
+    const pendingTotal = pendingCollection.reduce((sum, b) => sum + balanceDue(b), 0);
     const summaryHtml = pendingCollection.length
       ? `<div class="panel" style="margin-bottom:16px;background:var(--stone-dark);border-color:var(--gold)">
            <strong style="color:var(--moss-deep)">${money(pendingTotal)} pending collection</strong>
@@ -837,7 +839,8 @@ async function loadOwnerBookings() {
       : '';
 
     el.innerHTML = summaryHtml + bookings.map(b => {
-      const payAtVenueUnpaid = b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid';
+      const payAtVenueUnpaid = b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' && ['confirmed', 'completed'].includes(b.status);
+      const advance = b.deposit_amount > 0 && ['paid', 'forfeited'].includes(b.deposit_status) ? b.deposit_amount : 0;
       return `
       <div class="ticket">
         <div class="stub">
@@ -858,9 +861,11 @@ async function loadOwnerBookings() {
           </div>
           <div class="foot-row">
             <span class="badge ${b.status}">${statusLabel[b.status]}</span>
-            ${payAtVenueUnpaid ? `<span class="badge pending">Pay at spa — due</span>` : ''}
+            ${payAtVenueUnpaid ? `<span class="badge pending">${advance ? `Advance ${money(advance)} paid · collect ${money(balanceDue(b))}` : `Pay at spa — ${money(balanceDue(b))} due`}</span>` : ''}
+            ${b.deposit_status === 'forfeited' ? `<span class="badge cancelled">No-show · ${money(advance)} advance kept</span>` : ''}
+            ${b.refund_status === 'refunded' ? `<span class="badge cancelled">Refunded</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
-            ${payAtVenueUnpaid ? `<button class="btn small gold" onclick="markAsPaid(${b.id})">Mark as paid</button>` : ''}
+            ${payAtVenueUnpaid ? `<button class="btn small gold" onclick="markAsPaid(${b.id})">Mark ${money(balanceDue(b))} as paid</button>` : ''}
             ${payAtVenueUnpaid && b.status === 'confirmed' && b.booking_date <= localISODate() ? `<button class="btn small outline" onclick="markNoShow(${b.id})">Customer didn’t come</button>` : ''}
             ${b.status === 'confirmed' ? `<button class="btn small outline" onclick="setBookingStatus(${b.id},'completed')">Mark completed</button>` : ''}
           </div>
@@ -996,7 +1001,7 @@ async function savePicker() {
 // ---------------- No-shows ----------------
 async function markNoShow(id) {
   if (!confirm('Mark this customer as a no-show? No commission is charged on no-shows. Frequent no-show reports are reviewed by BookMySpa.')) return;
-  try { await API.put(`/owner/bookings/${id}/status`, { status: 'no_show' }); toast('Marked as no-show.'); loadOwnerBookings(); }
+  try { const r = await API.put(`/owner/bookings/${id}/status`, { status: 'no_show' }); toast(r.message || 'Marked as no-show.'); loadOwnerBookings(); }
   catch (e) { toast(e.message, 'error'); }
 }
 
@@ -1025,7 +1030,7 @@ async function loadEarnings() {
           </div>
           <p class="helper-text">${s.count} unsettled appointment${s.count !== 1 ? 's' : ''}</p>
           <div class="stat-grid" style="margin:12px 0 10px">
-            <div class="stat-card"><div class="num" style="font-size:22px">${money(s.onlineGross)}</div><div class="label">Paid online (held by us)</div></div>
+            <div class="stat-card"><div class="num" style="font-size:22px">${money(s.onlineGross)}</div><div class="label">Paid online &amp; advances (held by us)</div></div>
             <div class="stat-card"><div class="num" style="font-size:22px">${money(s.venueGross)}</div><div class="label">Paid at spa (held by you)</div></div>
             <div class="stat-card"><div class="num" style="font-size:22px">${money(s.commissionTotal)}</div><div class="label">Commission</div></div>
           </div>

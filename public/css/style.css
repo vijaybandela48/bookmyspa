@@ -700,3 +700,17 @@ input:focus, select:focus, textarea:focus { border-color: var(--moss); box-shado
 @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .wb-item .btn { flex-shrink: 0; white-space: nowrap; }
 #c_heat { overflow-x: auto; }
+
+/* ---------- Checkout: ways to pay (full / advance / at the spa) ---------- */
+.pay-options { display: grid; gap: 8px; margin-top: 6px; }
+.pay-opt { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: var(--radius-sm);
+  cursor: pointer; background: var(--white); transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; position: relative; margin: 0; font-weight: 400; }
+.pay-opt:hover { border-color: var(--gold); }
+.pay-opt.on { border-color: var(--moss); background: var(--stone-dark, #f3efe5); box-shadow: 0 0 0 3px rgba(35,57,44,.08); }
+.pay-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.pay-opt:focus-within { outline: 2px solid var(--gold); outline-offset: 2px; }
+.pay-ico { font-size: 20px; line-height: 1; }
+.pay-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pay-txt strong { font-size: 14.5px; color: var(--moss-deep, var(--moss)); }
+.pay-txt span { font-size: 12.5px; color: var(--ink-soft); }
+.pay-tag { margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .03em; color: var(--white); background: var(--gold); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }

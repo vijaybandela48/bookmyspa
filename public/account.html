@@ -92,7 +92,8 @@ async function load() {
           </div>
           <div class="foot-row">
             <span class="badge ${b.status}">${statusLabel[b.status]}</span>
-            ${b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' ? `<span class="badge pending">Pay ${money(b.amount)} at the spa</span>` : ''}
+            ${b.payment_mode === 'pay_at_venue' && b.payment_status === 'unpaid' && ['confirmed', 'completed'].includes(b.status) ? `<span class="badge pending">${b.deposit_status === 'paid' ? `Advance ${money(b.deposit_amount)} paid · pay ${money(b.amount - (b.giftcard_amount || 0) - b.deposit_amount)} at the spa` : `Pay ${money(b.amount - (b.giftcard_amount || 0))} at the spa`}</span>` : ''}
+            ${b.refund_status === 'refunded' ? `<span class="badge cancelled">Refunded</span>` : b.refund_status === 'failed' ? `<span class="badge pending">Refund in progress</span>` : ''}
             <span class="helper-text" style="margin:0">${formatDate(b.booking_date)} at ${formatTime(b.start_time)}</span>
             ${b.notify_channel ? `<span class="helper-text" style="margin:0">📩 Sent by ${b.notify_channel.split(',').map(c => ({ sms: 'SMS', whatsapp: 'WhatsApp', email: 'Email' })[c] || c).join(' & ')}</span>` : ''}
             ${b.my_rating ? `<span class="stars" style="color:var(--gold)" title="Your rating">${starsHtml(b.my_rating)}</span>` : ''}

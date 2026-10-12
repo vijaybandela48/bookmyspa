@@ -24,11 +24,12 @@
 
 const { db } = require('../db');
 
-function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress, payAtVenue, bookingRef }) {
+function composeMessage({ customerName, spaName, serviceName, date, startTime, amount, spaAddress, payAtVenue, bookingRef, advance = 0 }) {
   return `Hi ${customerName}, your booking is confirmed!\n` +
     (bookingRef ? `Booking ID: ${bookingRef}\n\n` : `\n`) +
     `${serviceName} at ${spaName}\n` +
     `${date} at ${startTime}\n` +
+    (advance > 0 ? `Advance paid: Rs. ${advance}\n` : '') +
     (payAtVenue ? `Amount due at the spa: Rs. ${amount}\n` : `Amount paid: Rs. ${amount}\n`) +
     (spaAddress ? `Location: ${spaAddress}\n` : '') +
     `\nSee you there! — BookMySpa`;
@@ -90,6 +91,12 @@ async function sendTwilioMessage(to, body, { from, channelPrefix = '' }) {
 }
 
 // Main entry point: sends a booking confirmation and records the attempt.
+// For pay-at-spa bookings the amount shown is what's still due at the counter
+// (after any gift card and advance deposit); for online bookings it's the price paid.
+function amountShown(b) {
+  if (b.payment_mode !== 'pay_at_venue') return b.amount;
+  return Math.round((b.amount - (b.giftcard_amount || 0) - (b.deposit_amount || 0)) * 100) / 100;
+}
 async function sendBookingConfirmation({ channel, booking, customer, spa, service }) {
   const message = composeMessage({
     customerName: customer.name,
@@ -97,7 +104,8 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     serviceName: service.name,
     date: booking.booking_date,
     startTime: booking.start_time,
-    amount: booking.amount,
+    amount: amountShown(booking),
+    advance: booking.deposit_amount || 0,
     spaAddress: spa.address,
     payAtVenue: booking.payment_mode === 'pay_at_venue',
     bookingRef: booking.booking_ref,
@@ -114,7 +122,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     result = msg91SmsConfigured
       ? await msg91SendFlow(recipient, process.env.MSG91_BOOKING_TEMPLATE_ID, {
           name: customer.name.split(' ')[0], service: service.name, spa: spa.name,
-          date: prettyDate(booking.booking_date), time: prettyTime(booking.start_time), amount: String(booking.amount),
+          date: prettyDate(booking.booking_date), time: prettyTime(booking.start_time), amount: String(amountShown(booking)),
           payment: booking.payment_mode === 'pay_at_venue' ? 'payable at the spa' : 'paid',
           ref: booking.booking_ref || '',
         })
@@ -124,7 +132,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
     result = msg91WhatsappConfigured
       ? await msg91SendWhatsapp(recipient, [
           customer.name.split(' ')[0], service.name, spa.name, prettyDate(booking.booking_date), prettyTime(booking.start_time),
-          booking.payment_mode === 'pay_at_venue' ? `Rs. ${booking.amount} payable at the spa` : `Rs. ${booking.amount} paid`,
+          booking.payment_mode === 'pay_at_venue' ? `Rs. ${amountShown(booking)} payable at the spa${booking.deposit_amount > 0 ? ` (Rs. ${booking.deposit_amount} advance paid)` : ''}` : `Rs. ${booking.amount} paid`,
           spa.latitude != null ? `https://www.google.com/maps/dir/?api=1&destination=${spa.latitude},${spa.longitude}` : (spa.address || spa.city),
         ])
       : await sendTwilioMessage(recipient, message, { from: process.env.TWILIO_WHATSAPP_FROM, channelPrefix: 'whatsapp:' });

@@ -5,6 +5,7 @@ const { db, hashPassword, verifyPassword, recomputeSpaRating, assignBookingRef }
 const os = require('node:os');
 const backupMod = require('./backup');
 const premium = require('./insights');
+const deposits = require('./deposits');
 const { sign, requireAuth, sendJSON } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
@@ -165,7 +166,7 @@ function withDiscount(sv) {
 function cleanupStaleBookings() {
   const stale = db.prepare(`SELECT * FROM bookings WHERE status='pending_payment' AND created_at < datetime('now','-10 minutes')`).all();
   for (const b of stale) {
-    const r = db.prepare("UPDATE bookings SET status='cancelled', cancel_reason='payment_timeout' WHERE id = ? AND status='pending_payment'").run(b.id);
+    const r = db.prepare("UPDATE bookings SET status='cancelled', cancel_reason='payment_timeout', deposit_status = CASE WHEN deposit_status = 'pending' THEN 'expired' ELSE deposit_status END WHERE id = ? AND status='pending_payment'").run(b.id);
     if (r.changes && b.gift_card_id && b.giftcard_amount > 0) restoreGift(b);
   }
 }
@@ -258,19 +259,25 @@ function applyCommission(bookingId, spa, amount) {
 //    clicks "Mark as paid" (otherwise skipping that click would dodge commission).
 //    Genuine no-shows are marked by the owner and carry no commission.
 // Net > 0: platform pays the spa. Net < 0: spa pays the platform.
+// A booking counts towards settlement once it has happened; a no-show with a kept deposit counts too.
+const SETTLEABLE = `(status = 'completed' OR (status = 'confirmed' AND booking_date < ?)) AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`;
+const FORFEITED = `(status = 'cancelled' AND cancel_reason = 'no_show' AND deposit_status = 'forfeited')`;
 function settlementSummary(spaId) {
   const today = localNow().date;
   const rows = db.prepare(
-    `SELECT id, amount, commission_amount, payment_mode, giftcard_amount FROM bookings
+    `SELECT id, amount, commission_amount, payment_mode, giftcard_amount, deposit_amount, deposit_status FROM bookings
      WHERE spa_id = ? AND settlement_id IS NULL AND route_transfer = 0
-       AND (status = 'completed' OR (status = 'confirmed' AND booking_date < ?))
-       AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
+       AND ((${SETTLEABLE}) OR ${FORFEITED})`
   ).all(spaId, today);
   const s = { bookingIds: rows.map((r) => r.id), count: rows.length, onlineGross: 0, onlineCommission: 0, venueGross: 0, venueCommission: 0 };
   for (const r of rows) {
     // onlineGross = money BookMySpa holds (online payments, gift cards, prepaid packages); venueGross = money the spa took at the counter
     if (r.payment_mode === 'online') { s.onlineGross += r.amount; s.onlineCommission += r.commission_amount; }
-    else { s.onlineGross += r.giftcard_amount || 0; s.venueGross += r.amount - (r.giftcard_amount || 0); s.venueCommission += r.commission_amount; }
+    else if (r.deposit_status === 'forfeited') { s.onlineGross += r.deposit_amount; s.onlineCommission += r.commission_amount; } // no-show: spa keeps the deposit minus commission
+    else {
+      const held = (r.giftcard_amount || 0) + (r.deposit_status === 'paid' ? r.deposit_amount : 0); // gift cards + advance deposits sit with BookMySpa
+      s.onlineGross += held; s.venueGross += r.amount - held; s.venueCommission += r.commission_amount;
+    }
   }
   for (const k of ['onlineGross', 'onlineCommission', 'venueGross', 'venueCommission']) s[k] = round2(s[k]);
   s.commissionTotal = round2(s.onlineCommission + s.venueCommission);
@@ -371,11 +378,78 @@ function activatePurchase(purchaseId, paymentRef) {
 // to that account, held until the day after the appointment so cancellations can still be refunded.
 function routeTransfersFor(booking, spa) {
   if (!gateway.isLive || process.env.RAZORPAY_ROUTE !== 'on' || !spa.razorpay_account_id) return [];
-  if (booking.giftcard_amount > 0 || booking.customer_package_id) return []; // mixed funding stays on the ledger
+  if (booking.giftcard_amount > 0 || booking.customer_package_id || booking.deposit_amount > 0) return []; // mixed funding / deposits stay on the ledger
   const share = Math.round((booking.amount - booking.commission_amount) * 100);
   if (share < 100) return [];
   return [{ account: spa.razorpay_account_id, amount: share, currency: 'INR', notes: { booking_ref: booking.booking_ref || String(booking.id) },
             linked_account_notes: ['booking_ref'], on_hold: true, on_hold_until: Math.floor(appointmentMs(booking) / 1000) + 24 * 3600 }];
+}
+
+// ---------------- PAYMENT STATE & REFUNDS ----------------
+// A paid online booking is fully paid; a paid deposit booking is confirmed with the balance still due at the spa.
+function markBookingPaid(booking) {
+  if (booking.deposit_amount > 0) db.prepare("UPDATE bookings SET status='confirmed', deposit_status='paid' WHERE id = ? AND status = 'pending_payment'").run(booking.id);
+  else db.prepare("UPDATE bookings SET status='confirmed', payment_status='paid' WHERE id = ? AND status = 'pending_payment'").run(booking.id);
+}
+// The customer paid after their 10-minute hold expired (slot already released): give the money back.
+async function refundLatePayment(booking, paymentRef, amount, method) {
+  db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)').run(booking.id, amount, method || 'razorpay', 'success', paymentRef);
+  let ok = false;
+  try { ok = (await gateway.refund({ transactionRef: paymentRef, amount })).success; } catch (e) { console.error('Late-payment refund failed:', e.message); }
+  db.prepare("UPDATE bookings SET refund_status = ?, payment_status = CASE WHEN ? THEN 'refunded' ELSE payment_status END, deposit_status = CASE WHEN deposit_status IS NOT NULL AND ? THEN 'refunded' ELSE deposit_status END WHERE id = ?")
+    .run(ok ? 'refunded' : 'failed', ok ? 1 : 0, ok ? 1 : 0, booking.id);
+  return ok;
+}
+// Cancels a booking and gives back everything the customer paid through BookMySpa:
+// the online payment or advance (including any booking fee), gift-card balance and package session.
+// A failed automatic refund is flagged (refund_status = 'failed') so the admin can see and fix it.
+async function cancelAndRefund(booking, reason) {
+  let msg = '', paymentStatus = booking.payment_status, depositStatus = booking.deposit_status, refundStatus = booking.refund_status;
+  const paidOnline = (booking.payment_mode === 'online' && booking.payment_status === 'paid') || booking.deposit_status === 'paid';
+  const payment = paidOnline
+    ? db.prepare("SELECT * FROM payments WHERE booking_id = ? AND status = 'success' AND transaction_ref NOT LIKE 'COUNTER_%' ORDER BY id DESC LIMIT 1").get(booking.id) : null;
+  if (payment && payment.amount > 0) {
+    let ok = false;
+    try { ok = (await gateway.refund({ transactionRef: payment.transaction_ref, amount: payment.amount, reverseAll: !!booking.route_transfer })).success; }
+    catch (e) { console.error('Refund failed for booking', booking.id, e.message); }
+    if (ok) {
+      refundStatus = 'refunded'; msg = ` ₹${payment.amount} refund initiated.`;
+      if (booking.payment_status === 'paid') paymentStatus = 'refunded';
+      if (booking.deposit_status === 'paid') depositStatus = 'refunded';
+    } else { refundStatus = 'failed'; msg = ' The online refund could not be processed automatically — our team will refund you manually.'; }
+  } else if (booking.payment_status === 'paid') paymentStatus = 'refunded';
+  if (depositStatus === 'pending') depositStatus = 'expired';
+  if (booking.gift_card_id && booking.giftcard_amount > 0) { restoreGift(booking); msg += ` ₹${booking.giftcard_amount} returned to your gift card.`; }
+  if (booking.customer_package_id) {
+    db.prepare('UPDATE customer_packages SET sessions_used = MAX(0, sessions_used - 1) WHERE id = ?').run(booking.customer_package_id);
+    msg += ' Your package session has been returned.';
+  }
+  db.prepare("UPDATE bookings SET status='cancelled', cancel_reason = ?, payment_status = ?, deposit_status = ?, refund_status = ? WHERE id = ?")
+    .run(reason, paymentStatus, depositStatus, refundStatus, booking.id);
+  return msg;
+}
+
+// Price of one booking after package / coupon / gift card — shared by the quote and the booking itself.
+function bookingPrice(spa, service, pkg, couponCode, giftCardCode, date, startTime) {
+  let finalAmount, couponDiscount = 0, appliedCode = null;
+  if (pkg) finalAmount = pkg.per_session_value;
+  else {
+    finalAmount = withDiscount(service).final_price;
+    if (couponCode) {
+      const result = findCoupon(spa.id, couponCode, service.id, date, startTime);
+      if (result.error) return { error: result.error };
+      const applied = applyCoupon(finalAmount, result.coupon);
+      couponDiscount = applied.discountAmount; finalAmount = applied.finalAmount; appliedCode = result.coupon.code;
+    }
+  }
+  let gift = null, giftAmount = 0;
+  if (!pkg && giftCardCode) {
+    gift = findGiftCard(giftCardCode);
+    if (gift.error) return { error: gift.error };
+    giftAmount = round2(Math.min(gift.card.balance, finalAmount));
+  }
+  const due = round2(finalAmount - giftAmount);
+  return { finalAmount, couponDiscount, appliedCode, gift, giftAmount, due, prepaid: !!pkg || due <= 0, commission: round2((finalAmount * commissionRateFor(spa)) / 100) };
 }
 
 // ---------------- GST INVOICES ----------------
@@ -413,8 +487,10 @@ function bookingInvoice(b) {
       pkgPart ? { method: 'Prepaid package', amount: pkgPart } : null,
       giftPart ? { method: 'Gift card', amount: giftPart } : null,
       !pkgPart && b.payment_mode === 'online' && b.amount - giftPart > 0 ? { method: 'Online (BookMySpa)', amount: round2(b.amount - giftPart) } : null,
-      b.payment_mode === 'pay_at_venue' && b.amount - giftPart > 0 ? { method: `Paid at spa${counter ? ' (' + counter.method + ')' : ''}`, amount: round2(b.amount - giftPart) } : null,
+      b.deposit_status === 'paid' && b.deposit_amount > 0 ? { method: 'Advance paid online (BookMySpa)', amount: b.deposit_amount } : null,
+      b.payment_mode === 'pay_at_venue' && deposits.balanceDue(b) > 0 ? { method: `Paid at spa${counter ? ' (' + counter.method + ')' : ''}`, amount: deposits.balanceDue(b) } : null,
     ].filter(Boolean),
+    platform_fee: b.booking_fee > 0 ? b.booking_fee : 0,
     note: registered ? 'Prices include GST.' : 'Supplier is not registered under GST — no tax charged.',
     facilitator: 'Booked through BookMySpa, an online booking platform acting on behalf of the spa.',
   };
@@ -641,11 +717,16 @@ async function handleApi(req, res, pathname, query) {
         if (bookingIdMatch) {
           const bookingId = Number(bookingIdMatch[1]);
           const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+          if (booking && booking.status === 'cancelled' && booking.cancel_reason === 'payment_timeout' && paymentEntity && paymentEntity.id
+              && !db.prepare('SELECT 1 FROM payments WHERE transaction_ref = ?').get(paymentEntity.id)) {
+            // Paid after the 10-minute hold expired and the slot was released: refund automatically.
+            await refundLatePayment(booking, paymentEntity.id, round2((paymentEntity.amount || 0) / 100) || deposits.onlineCharge(booking), paymentEntity.method);
+          }
           if (booking && booking.status === 'pending_payment') {
-            db.prepare("UPDATE bookings SET status='confirmed', payment_status='paid' WHERE id = ?").run(bookingId);
+            markBookingPaid(booking);
             if (paymentEntity) {
               db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)')
-                .run(bookingId, booking.amount, paymentEntity.method || 'razorpay', 'success', paymentEntity.id);
+                .run(bookingId, deposits.onlineCharge(booking), paymentEntity.method || 'razorpay', 'success', paymentEntity.id);
             }
             if (booking.coupon_code) {
               db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(booking.spa_id, booking.coupon_code);
@@ -666,7 +747,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     if (parts[1] === 'config' && req.method === 'GET') {
-      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', routePayouts: gateway.isLive && process.env.RAZORPAY_ROUTE === 'on', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION });
+      return sendJSON(res, 200, { onlinePayments: onlinePaymentsAvailable(), paymentsMock: !gateway.isLive, otp: otpAvailable(), otpMock: !notifier.isSmsConfigured, partnerUrl: process.env.PARTNER_URL || '/partner/', routePayouts: gateway.isLive && process.env.RAZORPAY_ROUTE === 'on', googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || null, commissionPercent: DEFAULT_COMMISSION, bookingFee: deposits.getSettings().booking_fee });
     }
 
     // ---------------- FORGOT PASSWORD (SMS code to the registered mobile) ----------------
@@ -983,13 +1064,31 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 201, { message: "Thanks — we'll get back to you soon." });
     }
 
+    // ---------------- CUSTOMER: PRICE QUOTE (the checkout screen shows exactly these numbers) ----------------
+    if (parts[1] === 'bookings' && parts[2] === 'quote' && req.method === 'POST') {
+      const user = requireAuth(req, res, ['customer']);
+      if (!user) return;
+      const body = await parseBody(req);
+      const spa = db.prepare("SELECT * FROM spas WHERE id = ? AND status = 'approved' AND suspended = 0").get(body.spaId);
+      const service = spa && db.prepare('SELECT * FROM services WHERE id = ? AND spa_id = ? AND active = 1').get(body.serviceId, spa.id);
+      if (!spa || !service) return sendJSON(res, 404, { error: 'Spa or service not found.' });
+      let pkg = null;
+      if (body.customerPackageId) {
+        pkg = db.prepare("SELECT * FROM customer_packages WHERE id = ? AND customer_id = ? AND status = 'active'").get(body.customerPackageId, user.id);
+        if (!pkg || pkg.spa_id !== spa.id || pkg.service_id !== service.id) return sendJSON(res, 400, { error: 'That package can’t be used for this service.' });
+      }
+      const price = bookingPrice(spa, service, pkg, pkg ? null : body.couponCode, pkg ? null : body.giftCardCode, body.date, body.startTime);
+      if (price.error) return sendJSON(res, 400, { error: price.error });
+      const pay = deposits.paymentOptions({ spa, amount: price.finalAmount, giftAmount: price.giftAmount, commission: price.commission, prepaid: price.prepaid, onlineOk: onlinePaymentsAvailable() });
+      return sendJSON(res, 200, { amount: price.finalAmount, couponDiscount: price.couponDiscount, giftAmount: price.giftAmount, due: price.due, prepaid: price.prepaid, ...pay });
+    }
+
     // ---------------- CUSTOMER: BOOKINGS ----------------
     if (parts[1] === 'bookings' && parts.length === 2 && req.method === 'POST') {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const body = await parseBody(req);
       const { spaId, serviceId, date, startTime, couponCode } = body;
-      let paymentMode = body.paymentMode === 'pay_at_venue' ? 'pay_at_venue' : 'online';
       const topts = therapistOpts(body);
 
       const dateErr = validateBookingDate(date);
@@ -1017,36 +1116,34 @@ async function handleApi(req, res, pathname, query) {
         if (!therapist) return sendJSON(res, 409, { error: 'No therapist matching your choice is free then. Please pick another time.' });
       }
 
-      let finalAmount, couponDiscount = 0, appliedCode = null;
-      if (pkg) finalAmount = pkg.per_session_value;
-      else {
-        finalAmount = withDiscount(service).final_price;
-        if (couponCode) {
-          const result = findCoupon(spaId, couponCode, serviceId, date, chosen.start_time);
-          if (result.error) return sendJSON(res, 400, { error: result.error });
-          const applied = applyCoupon(finalAmount, result.coupon);
-          couponDiscount = applied.discountAmount; finalAmount = applied.finalAmount; appliedCode = result.coupon.code;
-        }
+      const price = bookingPrice(spa, service, pkg, couponCode, body.giftCardCode, date, chosen.start_time);
+      if (price.error) return sendJSON(res, 400, { error: price.error });
+      const { finalAmount, couponDiscount, appliedCode, gift, giftAmount, due, prepaid } = price;
+      const pay = deposits.paymentOptions({ spa, amount: finalAmount, giftAmount, commission: price.commission, prepaid, onlineOk: onlinePaymentsAvailable() });
+      const wanted = prepaid ? 'prepaid' : ['online', 'deposit', 'pay_at_venue'].includes(body.paymentMode) ? body.paymentMode : 'online';
+      const option = pay.options.find((o) => o.mode === wanted);
+      if (!option) {
+        const err = wanted === 'online' ? "Online payment isn't available yet — please choose Pay at the spa."
+          : wanted === 'pay_at_venue' && pay.options.some((o) => o.mode === 'deposit') ? `This spa needs a small advance (₹${pay.deposit}) to hold your slot. You pay the rest at the spa.`
+          : wanted === 'pay_at_venue' ? 'This spa requires online payment to confirm a booking.'
+          : 'An advance payment isn’t available for this booking. Please choose another way to pay.';
+        return sendJSON(res, 400, { error: err, options: pay.options });
       }
-      let gift = null, giftAmount = 0;
-      if (!pkg && body.giftCardCode) {
-        gift = findGiftCard(body.giftCardCode);
-        if (gift.error) return sendJSON(res, 400, { error: gift.error });
-        giftAmount = round2(Math.min(gift.card.balance, finalAmount));
+      if (body.expectedPayNow !== undefined && Number(body.expectedPayNow) !== option.payNow) {
+        return sendJSON(res, 409, { error: 'The price changed while you were booking. Please check the amount and try again.', options: pay.options });
       }
-      const due = round2(finalAmount - giftAmount);
-      const prepaid = !!pkg || due <= 0;
-      if (prepaid) paymentMode = 'online';
-      else if (paymentMode === 'online' && !onlinePaymentsAvailable()) return sendJSON(res, 400, { error: "Online payment isn't available yet — please choose Pay at the spa." });
-      else if (paymentMode === 'pay_at_venue' && spa.allow_pay_at_venue === 0) return sendJSON(res, 400, { error: 'This spa requires online payment to confirm a booking.' });
-      const status = prepaid || paymentMode === 'pay_at_venue' ? 'confirmed' : 'pending_payment';
+      const paymentMode = option.mode === 'deposit' ? 'pay_at_venue' : option.mode === 'prepaid' ? 'online' : option.mode;
+      const depositAmount = option.mode === 'deposit' ? option.deposit : 0;
+      const bookingFee = option.mode === 'online' || option.mode === 'deposit' ? option.fee : 0;
+      const status = option.mode === 'prepaid' || option.mode === 'pay_at_venue' ? 'confirmed' : 'pending_payment';
 
       const info = db.prepare(
         `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode,
-                               therapist_id, therapist_choice, giftcard_amount, gift_card_id, customer_package_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+                               therapist_id, therapist_choice, giftcard_amount, gift_card_id, customer_package_id, deposit_amount, deposit_status, booking_fee)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).run(user.id, spa.id, service.id, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount, status, prepaid ? 'paid' : 'unpaid', paymentMode,
-            therapist ? therapist.id : null, therapist ? (topts.therapistId ? 'specific' : topts.gender || 'any') : null, giftAmount, gift ? gift.card.id : null, pkg ? pkg.id : null);
+            therapist ? therapist.id : null, therapist ? (topts.therapistId ? 'specific' : topts.gender || 'any') : null, giftAmount, gift ? gift.card.id : null, pkg ? pkg.id : null,
+            depositAmount, depositAmount > 0 ? 'pending' : null, bookingFee);
       const bookingId = Number(info.lastInsertRowid);
       applyCommission(bookingId, spa, finalAmount);
       assignBookingRef(bookingId);
@@ -1067,9 +1164,10 @@ async function handleApi(req, res, pathname, query) {
       }
       const message = pkg ? `Booking confirmed with your package — ${pkg.sessions_total - pkg.sessions_used - 1} session(s) left.`
         : prepaid ? 'Booking confirmed — fully paid with your gift card.'
-        : paymentMode === 'pay_at_venue' ? `Booking confirmed. Pay ₹${due.toLocaleString('en-IN')} at the spa.${giftAmount ? ` (₹${giftAmount} paid by gift card)` : ''}`
+        : option.mode === 'pay_at_venue' ? `Booking confirmed. Pay ₹${due.toLocaleString('en-IN')} at the spa.${giftAmount ? ` (₹${giftAmount} paid by gift card)` : ''}`
+        : option.mode === 'deposit' ? `Slot held. Pay the ₹${option.payNow.toLocaleString('en-IN')} advance within 10 minutes to confirm — the remaining ₹${option.payAtSpa.toLocaleString('en-IN')} is paid at the spa.`
         : 'Slot held. Complete payment within 10 minutes to confirm.';
-      return sendJSON(res, 201, { booking, notification, message, due, therapist: therapist ? { id: therapist.id, name: therapist.name } : null });
+      return sendJSON(res, 201, { booking, notification, message, due, payNow: option.payNow, payAtSpa: option.payAtSpa, therapist: therapist ? { id: therapist.id, name: therapist.name } : null });
     }
 
     if (parts[1] === 'bookings' && parts[2] === 'me' && req.method === 'GET') {
@@ -1109,7 +1207,7 @@ async function handleApi(req, res, pathname, query) {
       try {
         const bspa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
         const transfers = routeTransfersFor(booking, bspa);
-        const order = await gateway.createOrder({ amount: round2(booking.amount - (booking.giftcard_amount || 0)), bookingId: booking.id, transfers,
+        const order = await gateway.createOrder({ amount: deposits.onlineCharge(booking), bookingId: booking.id, transfers,
           notes: transfers.length ? { booking_ref: booking.booking_ref || String(booking.id) } : undefined });
         db.prepare('UPDATE bookings SET route_transfer = ? WHERE id = ?').run(transfers.length ? 1 : 0, booking.id);
         const customer = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
@@ -1129,9 +1227,18 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
       if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      const body = await parseBody(req);
+      if (booking.status === 'cancelled' && booking.cancel_reason === 'payment_timeout' && body.paymentId) {
+        // Paid after the 10-minute hold ran out and the slot was released — refund instead of leaving money stuck.
+        const late = gateway.verifyPayment({ mode: body.mode, orderId: body.orderId, paymentId: body.paymentId, signature: body.signature });
+        if (late.success && !db.prepare('SELECT 1 FROM payments WHERE transaction_ref = ?').get(late.transactionRef)) {
+          const ok = await refundLatePayment(booking, late.transactionRef, deposits.onlineCharge(booking), body.method);
+          return sendJSON(res, 409, { error: ok ? 'Your payment arrived after the 10-minute hold expired, so the slot was released. A full refund has been initiated — please book again.'
+                                                : 'Your payment arrived after the 10-minute hold expired. Our team will refund you shortly — please book again.' });
+        }
+      }
       if (booking.status !== 'pending_payment') return sendJSON(res, 409, { error: `This booking is already ${booking.status}.` });
 
-      const body = await parseBody(req);
       const notifyChannel = ['email', 'sms', 'whatsapp'].includes(body.notifyChannel) ? body.notifyChannel : 'email';
 
       const result = gateway.verifyPayment({
@@ -1142,11 +1249,11 @@ async function handleApi(req, res, pathname, query) {
       });
 
       db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)')
-        .run(booking.id, round2(booking.amount - (booking.giftcard_amount || 0)), body.method || 'razorpay', result.success ? 'success' : 'failed', result.transactionRef);
+        .run(booking.id, deposits.onlineCharge(booking), body.method || 'razorpay', result.success ? 'success' : 'failed', result.transactionRef);
 
       let notification = null;
       if (result.success) {
-        db.prepare("UPDATE bookings SET status='confirmed', payment_status='paid' WHERE id = ?").run(booking.id);
+        markBookingPaid(booking);
         if (booking.coupon_code) {
           db.prepare("UPDATE coupons SET used_count = used_count + 1 WHERE spa_id = ? AND code = ? COLLATE NOCASE").run(booking.spa_id, booking.coupon_code);
         }
@@ -1260,21 +1367,7 @@ async function handleApi(req, res, pathname, query) {
         return sendJSON(res, 409, { error: `Free cancellation ended ${bspa.cancel_window_hours} hours before your appointment. Please call the spa.` });
       }
 
-      let refundMessage = '';
-      let paymentStatus = booking.payment_status;
-      const payment = booking.payment_status === 'paid'
-        ? db.prepare("SELECT * FROM payments WHERE booking_id = ? AND status = 'success' AND transaction_ref NOT LIKE 'COUNTER_%' ORDER BY id DESC LIMIT 1").get(booking.id) : null;
-      if (payment && payment.amount > 0) {
-        const refundResult = await gateway.refund({ transactionRef: payment.transaction_ref, amount: payment.amount, reverseAll: !!booking.route_transfer });
-        if (refundResult.success) { paymentStatus = 'refunded'; refundMessage = ` ₹${payment.amount} refund initiated.`; }
-        else refundMessage = ' The online refund could not be processed automatically — our team will refund you manually.';
-      } else if (booking.payment_status === 'paid') paymentStatus = 'refunded';
-      if (booking.gift_card_id && booking.giftcard_amount > 0) { restoreGift(booking); refundMessage += ` ₹${booking.giftcard_amount} returned to your gift card.`; }
-      if (booking.customer_package_id) {
-        db.prepare('UPDATE customer_packages SET sessions_used = MAX(0, sessions_used - 1) WHERE id = ?').run(booking.customer_package_id);
-        refundMessage += ' Your package session has been returned.';
-      }
-      db.prepare("UPDATE bookings SET status='cancelled', payment_status=? WHERE id = ?").run(paymentStatus, booking.id);
+      const refundMessage = await cancelAndRefund(booking, 'customer');
       return sendJSON(res, 200, { message: 'Booking cancelled.' + refundMessage });
     }
 
@@ -1685,12 +1778,23 @@ async function handleApi(req, res, pathname, query) {
       const body = await parseBody(req);
       if (!['completed', 'cancelled', 'no_show'].includes(body.status)) return sendJSON(res, 400, { error: 'Invalid status.' });
       if (booking.settlement_id) return sendJSON(res, 409, { error: 'This booking is already settled and can no longer be changed.' });
+      if (booking.status === 'cancelled') return sendJSON(res, 409, { error: 'This booking is already cancelled.' });
+      if (booking.status === 'pending_payment') return sendJSON(res, 409, { error: 'The customer is still paying for this booking. Try again in a few minutes.' });
       if (body.status === 'no_show') {
         if (booking.payment_mode !== 'pay_at_venue' || booking.payment_status === 'paid') return sendJSON(res, 400, { error: 'Only unpaid pay-at-spa bookings can be marked as a no-show.' });
         if (booking.booking_date > localNow().date) return sendJSON(res, 400, { error: "You can't mark a no-show before the appointment date." });
+        if (booking.deposit_status === 'paid') {
+          // The advance is kept as a no-show charge; commission applies to that amount only.
+          db.prepare("UPDATE bookings SET status = 'cancelled', cancel_reason = 'no_show', deposit_status = 'forfeited', commission_amount = ? WHERE id = ?")
+            .run(round2((booking.deposit_amount * (booking.commission_percent || 0)) / 100), booking.id);
+          return sendJSON(res, 200, { message: `Marked as a no-show. The ₹${booking.deposit_amount} advance is kept and paid to you (minus commission) at the next settlement.` });
+        }
         db.prepare("UPDATE bookings SET status = 'cancelled', cancel_reason = 'no_show' WHERE id = ?").run(booking.id);
+      } else if (body.status === 'cancelled') {
+        const msg = await cancelAndRefund(booking, 'owner');
+        return sendJSON(res, 200, { message: 'Booking cancelled.' + (msg ? ' Customer refund:' + msg : '') });
       } else {
-        db.prepare('UPDATE bookings SET status = ?, cancel_reason = ? WHERE id = ?').run(body.status, body.status === 'cancelled' ? 'owner' : null, booking.id);
+        db.prepare('UPDATE bookings SET status = ?, cancel_reason = NULL WHERE id = ?').run(body.status, booking.id);
       }
       return sendJSON(res, 200, { message: 'Booking updated.' });
     }
@@ -1703,6 +1807,7 @@ async function handleApi(req, res, pathname, query) {
       ).get(parts[3], user.id);
       if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (booking.payment_status === 'paid') return sendJSON(res, 409, { error: 'This booking is already marked as paid.' });
+      if (booking.payment_mode !== 'pay_at_venue') return sendJSON(res, 409, { error: 'This booking was paid online.' });
       if (!['confirmed', 'completed'].includes(booking.status)) {
         return sendJSON(res, 409, { error: 'Only confirmed or completed bookings can be marked as paid.' });
       }
@@ -1710,10 +1815,10 @@ async function handleApi(req, res, pathname, query) {
       const method = ['cash', 'card', 'upi'].includes(body.method) ? body.method : 'cash';
 
       db.prepare('INSERT INTO payments (booking_id, amount, method, status, transaction_ref) VALUES (?,?,?,?,?)')
-        .run(booking.id, booking.amount, method, 'success', 'COUNTER_' + crypto.randomBytes(6).toString('hex').toUpperCase());
+        .run(booking.id, deposits.balanceDue(booking), method, 'success', 'COUNTER_' + crypto.randomBytes(6).toString('hex').toUpperCase());
       db.prepare("UPDATE bookings SET payment_status = 'paid' WHERE id = ?").run(booking.id);
 
-      return sendJSON(res, 200, { message: `Marked as paid (${method}).` });
+      return sendJSON(res, 200, { message: `Marked ₹${deposits.balanceDue(booking)} as paid (${method}).` });
     }
 
     // ---------------- REVIEWS ----------------
@@ -2243,6 +2348,16 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, coords);
     }
 
+    // ---------------- ADMIN: ADVANCE DEPOSIT & BOOKING FEE ----------------
+    if (parts[1] === 'admin' && parts[2] === 'payment-settings' && ['GET', 'PUT'].includes(req.method)) {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      if (req.method === 'GET') return sendJSON(res, 200, { settings: deposits.getSettings() });
+      const r = deposits.saveSettings(await parseBody(req));
+      if (r.error) return sendJSON(res, 400, { error: r.error });
+      return sendJSON(res, 200, { message: 'Saved. New settings apply to new bookings only.', settings: r.settings });
+    }
+
     // ---------------- ADMIN: COMMISSION & SETTLEMENTS ----------------
     if (parts[1] === 'admin' && parts[2] === 'settlements' && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
@@ -2251,10 +2366,11 @@ async function handleApi(req, res, pathname, query) {
       const rows = spas.map((s) => {
         const sum = settlementSummary(s.id); delete sum.bookingIds;
         return { spa_id: s.id, spa_name: s.name, owner_name: s.owner_name, owner_phone: s.owner_phone, commission_percent: commissionRateFor(s),
-                 custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), payout_account: s.razorpay_account_id || null, ...sum };
+                 custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), payout_account: s.razorpay_account_id || null,
+                 deposit_policy: s.deposit_policy || null, deposit_amount: s.deposit_amount || null, ...sum };
       });
       const history = db.prepare(`SELECT st.*, s.name AS spa_name FROM settlements st JOIN spas s ON s.id = st.spa_id ORDER BY st.created_at DESC LIMIT 100`).all();
-      return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION });
+      return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION, payments: deposits.getSettings() });
     }
 
     if (parts[1] === 'admin' && parts[2] === 'spas' && parts[4] === 'settle' && req.method === 'POST') {
@@ -2299,6 +2415,16 @@ async function handleApi(req, res, pathname, query) {
       }
       if (body.allow_pay_at_venue !== undefined) {
         db.prepare('UPDATE spas SET allow_pay_at_venue = ? WHERE id = ?').run(body.allow_pay_at_venue ? 1 : 0, spa.id);
+      }
+      if (body.deposit_policy !== undefined) {
+        const v = body.deposit_policy === '' || body.deposit_policy === null || body.deposit_policy === 'default' ? null : body.deposit_policy;
+        if (v !== null && !deposits.POLICIES.includes(v)) return sendJSON(res, 400, { error: 'Advance must be Default, Off, Optional or Required.' });
+        db.prepare('UPDATE spas SET deposit_policy = ? WHERE id = ?').run(v, spa.id);
+      }
+      if (body.deposit_amount !== undefined) {
+        const v = body.deposit_amount === '' || body.deposit_amount === null ? null : Math.round(Number(body.deposit_amount));
+        if (v !== null && !(v >= 1 && v <= 10000)) return sendJSON(res, 400, { error: 'The spa’s advance must be between ₹1 and ₹10,000 (leave empty for the default).' });
+        db.prepare('UPDATE spas SET deposit_amount = ? WHERE id = ?').run(v, spa.id);
       }
       return sendJSON(res, 200, { message: 'Updated. New rates apply to new bookings only.' });
     }
@@ -2427,6 +2553,16 @@ async function handleApi(req, res, pathname, query) {
       return sendJSON(res, 200, { bookings: rows });
     }
 
+    if (parts[1] === 'admin' && parts[2] === 'bookings' && parts[4] === 'refund-done' && req.method === 'PUT') {
+      const user = requireAuth(req, res, ['admin']);
+      if (!user) return;
+      const b = db.prepare("SELECT * FROM bookings WHERE id = ? AND refund_status = 'failed'").get(parts[3]);
+      if (!b) return sendJSON(res, 404, { error: 'No failed refund on this booking.' });
+      db.prepare(`UPDATE bookings SET refund_status = 'manual', payment_status = CASE WHEN payment_mode = 'online' AND payment_status = 'paid' THEN 'refunded' ELSE payment_status END,
+                  deposit_status = CASE WHEN deposit_status = 'paid' THEN 'refunded' ELSE deposit_status END WHERE id = ?`).run(b.id);
+      return sendJSON(res, 200, { message: 'Marked as refunded manually.' });
+    }
+
     if (parts[1] === 'admin' && parts[2] === 'messages' && parts.length === 3 && req.method === 'GET') {
       const user = requireAuth(req, res, ['admin']);
       if (!user) return;
@@ -2458,9 +2594,13 @@ async function handleApi(req, res, pathname, query) {
       const revenue = db.prepare("SELECT COALESCE(SUM(amount),0) r FROM bookings WHERE payment_status='paid'").get().r;
       const newMessages = db.prepare("SELECT COUNT(*) c FROM contact_messages WHERE status='new'").get().c;
       const commissionEarned = round2(db.prepare(
-        `SELECT COALESCE(SUM(commission_amount),0) c FROM bookings WHERE (status = 'completed' OR (status = 'confirmed' AND booking_date < ?)) AND (payment_mode = 'pay_at_venue' OR payment_status = 'paid')`
+        `SELECT COALESCE(SUM(commission_amount),0) c FROM bookings WHERE (${SETTLEABLE}) OR ${FORFEITED}`
       ).get(localNow().date).c);
-      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned, backup: (() => {
+      const bookingFees = round2(db.prepare(
+        "SELECT COALESCE(SUM(booking_fee),0) v FROM bookings WHERE booking_fee > 0 AND ((payment_mode = 'online' AND payment_status = 'paid') OR deposit_status IN ('paid','forfeited'))").get().v);
+      const depositsHeld = round2(db.prepare("SELECT COALESCE(SUM(deposit_amount),0) v FROM bookings WHERE deposit_status IN ('paid','forfeited') AND settlement_id IS NULL").get().v);
+      const failedRefunds = db.prepare("SELECT COUNT(*) c FROM bookings WHERE refund_status = 'failed'").get().c;
+      return sendJSON(res, 200, { totalSpas, pendingSpas, totalUsers, totalCustomers, totalOwners, totalBookings, confirmedBookings, revenue, newMessages, commissionEarned, bookingFees, depositsHeld, failedRefunds, backup: (() => {
           const st = backupMod.readStatus(); const at = st.lastLocal && st.lastLocal.at;
           return { lastAt: at || null, ageHours: at ? Math.round(((Date.now() - Date.parse(at)) / 3600000) * 10) / 10 : null, offsite: backupMod.offsiteSummary().configured,
                    lastOffsiteAt: st.lastOffsite ? st.lastOffsite.at : null, lastOffsiteError: st.lastOffsiteError ? st.lastOffsiteError.message : null,

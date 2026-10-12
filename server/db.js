@@ -569,7 +569,12 @@ try {
     ['bookings', 'customer_package_id', 'INTEGER'], ['bookings', 'route_transfer', 'INTEGER NOT NULL DEFAULT 0'],
     ['spas', 'legal_name', 'TEXT'], ['spas', 'gstin', 'TEXT'], ['spas', 'gst_rate', 'REAL NOT NULL DEFAULT 18'],
     ['spas', 'razorpay_account_id', 'TEXT'],
+    // Advance deposit & booking fee (additive only; existing bookings keep 0 / NULL = unchanged behaviour)
+    ['bookings', 'deposit_amount', 'REAL NOT NULL DEFAULT 0'], ['bookings', 'deposit_status', 'TEXT'],
+    ['bookings', 'booking_fee', 'REAL NOT NULL DEFAULT 0'], ['bookings', 'refund_status', 'TEXT'],
+    ['spas', 'deposit_policy', 'TEXT'], ['spas', 'deposit_amount', 'REAL'],
   ]) if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
+  db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 } catch (e) { console.error('Migration error:', e.message); }
 
 seed();

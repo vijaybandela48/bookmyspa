@@ -214,8 +214,9 @@ function insights(ownerId, spaId, days) {
   const services = group('service_name', cur);
   const therapists = group('therapist_name', cur.filter((r) => r.therapist_id));
   const payMix = [
-    { name: 'Paid online', value: round2(cur.filter((r) => r.payment_mode === 'online' && !r.customer_package_id).reduce((a, r) => a + r.amount - (r.giftcard_amount || 0), 0)) },
-    { name: 'Paid at spa', value: round2(cur.filter((r) => r.payment_mode === 'pay_at_venue').reduce((a, r) => a + r.amount - (r.giftcard_amount || 0), 0)) },
+    { name: 'Paid online', value: round2(cur.filter((r) => r.payment_mode === 'online' && !r.customer_package_id).reduce((a, r) => a + r.amount - (r.giftcard_amount || 0), 0)
+                                        + cur.filter((r) => r.payment_mode === 'pay_at_venue' && r.deposit_status === 'paid').reduce((a, r) => a + r.deposit_amount, 0)) },
+    { name: 'Paid at spa', value: round2(cur.filter((r) => r.payment_mode === 'pay_at_venue').reduce((a, r) => a + r.amount - (r.giftcard_amount || 0) - (r.deposit_status === 'paid' ? r.deposit_amount : 0), 0)) },
     { name: 'Gift cards', value: round2(cur.reduce((a, r) => a + (r.giftcard_amount || 0), 0)) },
     { name: 'Packages', value: round2(cur.filter((r) => r.customer_package_id).reduce((a, r) => a + r.amount, 0)) },
   ];

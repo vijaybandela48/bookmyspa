@@ -59,15 +59,65 @@ let spaData = null, servicesData = [];
 let selectedServiceId = null, selectedDate = null, selectedSlot = null;
 let appliedCoupon = null;
 let therapistsData = [], packagesData = [], tChoice = { therapistId: null, gender: null }, appliedGift = null, usePackage = null;
-let paymentMode = 'online';
+let paymentMode = null, quote = null, quoteSeq = 0, paymentsMock = true;
 
-function setPaymentMode(mode) {
-  paymentMode = mode;
-  document.getElementById('modeOnlineBtn').classList.toggle('active', mode === 'online');
-  document.getElementById('modeVenueBtn').classList.toggle('active', mode === 'pay_at_venue');
-  document.getElementById('onlinePaymentFields').style.display = mode === 'online' ? 'block' : 'none';
-  document.getElementById('venueHint').style.display = mode === 'pay_at_venue' ? 'block' : 'none';
-  document.getElementById('confirmPayBtn').textContent = mode === 'online' ? 'Pay & confirm' : 'Confirm booking';
+// The server works out every way to pay (full online / advance / at the spa) and the exact amounts,
+// so the numbers on this screen are always exactly what gets charged.
+function quoteBody() {
+  const b = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot };
+  if (usePackage) b.customerPackageId = usePackage;
+  else {
+    if (appliedCoupon && appliedCoupon.valid) b.couponCode = appliedCoupon.code;
+    if (appliedGift) b.giftCardCode = appliedGift.code;
+  }
+  return b;
+}
+async function refreshQuote() {
+  const seq = ++quoteSeq, box = document.getElementById('payOptions');
+  if (!box) return;
+  box.innerHTML = '<p class="helper-text">Working out your total…</p>';
+  try {
+    const q = await API.post('/bookings/quote', quoteBody());
+    if (seq !== quoteSeq) return; // a newer change is already being priced
+    quote = q; renderPayOptions();
+  } catch (e) { if (seq === quoteSeq) { quote = null; box.innerHTML = `<p class="helper-text" style="color:var(--plum)">${esc(e.message)}</p>`; updatePayButton(); } }
+}
+const PAY_COPY = {
+  online: o => ({ icon: '💳', title: 'Pay in full online', sub: `${money(o.payNow)} now · nothing to pay at the spa` }),
+  deposit: o => ({ icon: '🔒', title: `Reserve with ${money(o.deposit)} advance`, sub: `${money(o.payNow)} now · ${money(o.payAtSpa)} at the spa` }),
+  pay_at_venue: o => ({ icon: '🏢', title: 'Pay at the spa', sub: `${money(o.payAtSpa)} by cash, card or UPI when you arrive` }),
+};
+function renderPayOptions() {
+  const box = document.getElementById('payOptions'), label = document.getElementById('payLabel');
+  const opts = (quote && quote.options || []).filter(o => o.mode !== 'prepaid');
+  const prepaid = quote && quote.prepaid;
+  label.style.display = prepaid ? 'none' : '';
+  if (prepaid) { paymentMode = 'prepaid'; box.innerHTML = ''; updatePayButton(); return; }
+  if (!opts.length) {
+    paymentMode = null;
+    box.innerHTML = '<p class="helper-text" style="color:var(--plum)">This spa only accepts online payment, which isn’t available yet. Please check back soon.</p>';
+    return updatePayButton();
+  }
+  if (!opts.some(o => o.mode === paymentMode)) paymentMode = (opts.find(o => o.mode === 'deposit') || opts[0]).mode;
+  box.innerHTML = opts.map(o => { const c = PAY_COPY[o.mode](o); return `
+    <label class="pay-opt ${o.mode === paymentMode ? 'on' : ''}">
+      <input type="radio" name="payopt" value="${o.mode}" ${o.mode === paymentMode ? 'checked' : ''} onchange="paymentMode = this.value; renderPayOptions()">
+      <span class="pay-ico">${c.icon}</span>
+      <span class="pay-txt"><strong>${c.title}</strong><span>${c.sub}</span></span>
+      ${o.mode === 'deposit' ? '<span class="pay-tag">Popular</span>' : ''}
+    </label>`; }).join('') +
+    (quote.fee > 0 && opts.some(o => o.fee > 0) ? `<p class="helper-text" style="margin:6px 0 0">Online payments include a ${money(quote.fee)} booking fee.</p>` : '') +
+    (paymentMode === 'deposit' ? `<p class="helper-text" style="margin:6px 0 0">Free cancellation until ${spaData.cancel_window_hours ?? 4} hours before — your advance is refunded in full. If you don’t turn up, the advance is kept by the spa.</p>` : '');
+  updatePayButton();
+}
+function currentOption() { return quote && (quote.options || []).find(o => o.mode === paymentMode); }
+function payBtnLabel() { const o = currentOption(); return o && o.payNow > 0 ? `Pay ${money(o.payNow)} & confirm` : 'Confirm booking'; }
+function updatePayButton() {
+  const btn = document.getElementById('confirmPayBtn'); if (!btn) return;
+  const o = currentOption();
+  btn.disabled = !o; btn.textContent = payBtnLabel();
+  const sim = document.getElementById('onlinePaymentFields'); if (sim) sim.style.display = o && o.payNow > 0 && paymentsMock ? 'block' : 'none';
+  const note = document.getElementById('mockNote'); if (note) note.style.display = paymentsMock ? '' : 'none';
 }
 
 function todayISO() { return localISODate(); }
@@ -292,8 +342,8 @@ async function openPayModal() {
     return;
   }
   appliedCoupon = null; appliedGift = null; usePackage = null;
-  paymentMode = 'online';
-  const onlineOk = (await getConfig()).onlinePayments;
+  paymentMode = null; quote = null;
+  paymentsMock = !!(await getConfig()).paymentsMock;
   const service = servicesData.find(s => s.id === selectedServiceId);
   const modal = document.getElementById('payModal');
   document.getElementById('payModalBody').innerHTML = `
@@ -315,12 +365,9 @@ async function openPayModal() {
       </div>
       <p class="helper-text" id="giftMsg"></p>
     </div>
-    <label style="margin-top:16px">How would you like to pay?</label>
-    <div class="role-toggle">
-      <button type="button" class="active" id="modeOnlineBtn" onclick="setPaymentMode('online')">💳 Pay online now</button>
-      <button type="button" id="modeVenueBtn" onclick="setPaymentMode('pay_at_venue')">🏢 Pay at the spa</button>
-    </div>
-    <div id="onlinePaymentFields">
+    <label style="margin-top:16px" id="payLabel">How would you like to pay?</label>
+    <div id="payOptions" class="pay-options"></div>
+    <div id="onlinePaymentFields" style="display:none">
       <label>Payment method (simulated)</label>
       <select id="payMethod">
         <option value="card">Credit / Debit Card</option>
@@ -328,13 +375,12 @@ async function openPayModal() {
         <option value="netbanking">Net Banking</option>
       </select>
     </div>
-    <p class="helper-text" id="venueHint" style="display:none;margin-top:8px">Your slot is reserved right away — pay by cash, card or UPI when you arrive.</p>
     <p class="helper-text" style="margin-top:14px">📩 Your confirmation will be sent by <strong>SMS and WhatsApp</strong> to ${esc(user.phone || 'your mobile number')}.</p>
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn outline block" onclick="closePayModal()">Cancel</button>
       <button class="btn gold block" id="confirmPayBtn" onclick="confirmBooking()">Pay &amp; confirm</button>
     </div>
-    <p class="helper-text" style="margin-top:12px">This is a simulated payment gateway for demo purposes. No real money is charged. Confirmation delivery is also simulated in this demo — the message content is real, but nothing is actually sent.</p>
+    <p class="helper-text" id="mockNote" style="margin-top:12px">This is a simulated payment gateway for demo purposes. No real money is charged. Confirmation delivery is also simulated in this demo — the message content is real, but nothing is actually sent.</p>
   `;
   renderPriceDisplay(service);
   try {
@@ -343,21 +389,8 @@ async function openPayModal() {
     if (usable) document.getElementById('pkgBox').innerHTML = `<label class="pkg-use"><input type="checkbox" id="pkgUse" onchange="usePackage = this.checked ? ${usable.id} : null; renderPriceDisplay(servicesData.find(s => s.id === selectedServiceId))">
       <span>Use my package <strong>${esc(usable.name)}</strong> — ${usable.sessions_total - usable.sessions_used} session${usable.sessions_total - usable.sessions_used !== 1 ? 's' : ''} left</span></label>`;
   } catch {}
-  if (!onlineOk) {
-    document.getElementById('modeOnlineBtn').style.display = 'none';
-    setPaymentMode('pay_at_venue');
-    document.getElementById('venueHint').textContent = 'Online payment is coming soon — reserve your slot now and pay by cash, card or UPI at the spa.';
-  }
-  if (spaData.allow_pay_at_venue === false) {
-    document.getElementById('modeVenueBtn').style.display = 'none';
-    if (onlineOk) setPaymentMode('online');
-    else {
-      document.getElementById('venueHint').style.display = 'block';
-      document.getElementById('venueHint').textContent = 'This spa only accepts online payment, which isn’t available yet. Please check back soon.';
-      document.getElementById('confirmPayBtn').disabled = true;
-    }
-  }
   modal.classList.add('open');
+  refreshQuote();
 }
 
 function renderPriceDisplay(service) {
@@ -384,13 +417,7 @@ function renderPriceDisplay(service) {
     const g = Math.min(appliedGift.balance, base), due = Math.max(0, Math.round((base - g) * 100) / 100);
     el.innerHTML += `<p style="font-size:13.5px;color:var(--moss);font-weight:600;margin:-8px 0 2px">🎁 Gift card −${money(g)}</p><p style="font-size:16px;font-weight:700;margin:0 0 14px">To pay: ${money(due)}${due === 0 ? ' — fully covered' : ''}</p>`;
   }
-  const covered = !!usePackage || !!(appliedGift && appliedGift.balance >= base);
-  const onlineBtn = document.getElementById('modeOnlineBtn');
-  if (onlineBtn) {
-    const row = onlineBtn.parentElement; row.style.display = covered ? 'none' : '';
-    const lbl = row.previousElementSibling; if (lbl && lbl.tagName === 'LABEL') lbl.style.display = covered ? 'none' : '';
-  }
-  const btn = document.getElementById('confirmPayBtn'); if (btn && covered) btn.textContent = 'Confirm booking';
+  refreshQuote();
 }
 
 async function applyCouponCode() {
@@ -473,7 +500,9 @@ async function confirmBooking() {
   const notifyChannel = 'all';
   btn.disabled = true; btn.textContent = 'Processing…';
   try {
-    const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode, notifyChannel };
+    const opt = currentOption();
+    if (!opt) throw new Error('Please choose how you’d like to pay.');
+    const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode: opt.mode === 'prepaid' ? 'online' : opt.mode, expectedPayNow: opt.payNow, notifyChannel };
     if (appliedCoupon && appliedCoupon.valid) bookingBody.couponCode = appliedCoupon.code;
     if (tChoice.therapistId) bookingBody.therapistId = tChoice.therapistId; else if (tChoice.gender) bookingBody.gender = tChoice.gender;
     if (appliedGift) bookingBody.giftCardCode = appliedGift.code;
@@ -512,7 +541,7 @@ async function confirmBooking() {
         },
         modal: {
           ondismiss: function () {
-            btn.disabled = false; btn.textContent = 'Pay & confirm';
+            btn.disabled = false; btn.textContent = payBtnLabel();
             toast('Payment cancelled.', 'error');
           },
         },
@@ -531,7 +560,7 @@ async function confirmBooking() {
     }
   } catch (e) {
     toast(e.message, 'error');
-    btn.disabled = false; btn.textContent = 'Pay & confirm';
+    btn.disabled = false; btn.textContent = payBtnLabel();
   }
 }
 
@@ -549,7 +578,7 @@ async function finishVerification(bookingId, payload) {
     }
   } catch (e) {
     toast(e.message, 'error');
-    btn.disabled = false; btn.textContent = 'Pay & confirm';
+    btn.disabled = false; btn.textContent = payBtnLabel();
   }
 }
 

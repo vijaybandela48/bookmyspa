@@ -89,6 +89,9 @@ async function loadStats() {
       <div class="stat-card"><div class="num">✅ ${s.confirmedBookings}</div><div class="label">Confirmed</div></div>
       <div class="stat-card"><div class="num">💰 ${money(s.revenue)}</div><div class="label">Revenue collected</div></div>
       <div class="stat-card"><div class="num">🏦 ${money(s.commissionEarned)}</div><div class="label">Commission earned</div></div>
+      <div class="stat-card"><div class="num">🎟️ ${money(s.bookingFees || 0)}</div><div class="label">Booking fees collected</div></div>
+      <div class="stat-card"><div class="num">🔒 ${money(s.depositsHeld || 0)}</div><div class="label">Advances held (not yet settled)</div></div>
+      ${s.failedRefunds ? `<div class="stat-card" style="border-color:#A03A34;cursor:pointer" onclick="switchTab('bookings')"><div class="num">⚠️ ${s.failedRefunds}</div><div class="label">Refunds failed — action needed</div></div>` : ''}
       <div class="stat-card"><div class="num">🎁 ${money(s.giftCardLiability + s.packageLiability)}</div><div class="label">Unused gift cards &amp; packages (owed as service)</div></div>
       <div class="stat-card"><div class="num">✨ ${money(s.premiumRevenue)}</div><div class="label">Premium revenue · ${s.premiumActive} active</div></div>
       <div class="stat-card"><div class="num">⭐ ${money(s.featuredRevenue)}</div><div class="label">Featured revenue · ${s.activeFeatured} live</div></div>
@@ -221,8 +224,10 @@ async function loadBookings() {
                 <td ${td}>${esc(b.spa_name)}</td>
                 <td ${td}>${esc(b.service_name)}</td>
                 <td ${td}>${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
-                <td ${td} class="mono">${money(b.amount)}</td>
-                <td ${td}>${b.payment_mode === 'pay_at_venue' ? '🏢 At spa' : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}</td>
+                <td ${td} class="mono">${money(b.amount)}${b.booking_fee > 0 ? `<div class="helper-text" style="margin:0">+ ${money(b.booking_fee)} fee</div>` : ''}</td>
+                <td ${td}>${b.payment_mode === 'pay_at_venue' ? (b.deposit_amount > 0 ? '🔒 Advance + spa' : '🏢 At spa') : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}
+                  ${b.deposit_amount > 0 ? `<div class="helper-text" style="margin:0">Advance ${money(b.deposit_amount)} · ${({ pending: 'awaiting', paid: 'paid', refunded: 'refunded', forfeited: 'kept (no-show)', expired: 'not paid' })[b.deposit_status] || b.deposit_status || ''}</div>` : ''}
+                  ${b.refund_status === 'failed' ? `<div><span class="badge cancelled">Refund failed</span> <button class="btn small outline" onclick="refundDone(${b.id})">Refunded manually</button></div>` : b.refund_status === 'manual' ? '<div class="helper-text" style="margin:0">Refunded manually</div>' : ''}</td>
                 <td ${td}><span class="badge ${b.status}">${b.cancel_reason === 'no_show' ? 'No-show' : statusLabel[b.status]}</span></td>
               </tr>`).join('')}
           </tbody>
@@ -386,9 +391,28 @@ async function loadSettlements() {
   const el = document.getElementById('settlementList');
   el.innerHTML = '<p>Loading…</p>';
   try {
-    const { spas, history, defaultCommission } = await API.get('/admin/settlements');
+    const { spas, history, defaultCommission, payments: ps } = await API.get('/admin/settlements');
+    const polName = { off: 'Off', optional: 'Optional', required: 'Required' };
     const th = 'style="padding:10px 12px;white-space:nowrap"', td = 'style="padding:10px 12px;vertical-align:top"';
     el.innerHTML = `
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin:0 0 4px">🔒 Advance &amp; booking fee</h3>
+        <p class="helper-text" style="margin:0 0 14px;line-height:1.6">An <strong>advance</strong> lets customers reserve with a small online payment and pay the rest at the spa. It cuts no-shows, and because it is never less than your commission, you always collect commission — even when the rest is paid in cash. A <strong>booking fee</strong> is a flat charge added to every online payment; it’s yours and isn’t shared with the spa.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end">
+          <div><label for="ps_policy">Advance at checkout</label>
+            <select id="ps_policy">
+              <option value="optional" ${ps.deposit_policy === 'optional' ? 'selected' : ''}>Optional — customer chooses</option>
+              <option value="required" ${ps.deposit_policy === 'required' ? 'selected' : ''}>Required on every booking</option>
+              <option value="off" ${ps.deposit_policy === 'off' ? 'selected' : ''}>Off</option>
+            </select></div>
+          <div><label for="ps_value">Advance amount</label>
+            <div style="display:flex;gap:8px"><input id="ps_value" type="number" min="1" step="1" value="${ps.deposit_value}" style="flex:1">
+            <select id="ps_type" style="width:auto"><option value="fixed" ${ps.deposit_type === 'fixed' ? 'selected' : ''}>₹ fixed</option><option value="percent" ${ps.deposit_type === 'percent' ? 'selected' : ''}>% of price</option></select></div></div>
+          <div><label for="ps_fee">Booking fee on online payments (₹, 0 = none)</label><input id="ps_fee" type="number" min="0" max="500" step="1" value="${ps.booking_fee}"></div>
+          <div><button class="btn gold" onclick="savePaySettings()">Save</button></div>
+        </div>
+        <p class="helper-text" style="margin:10px 0 0">No-show: the advance is kept and paid to the spa minus commission. Cancelled in the free window or by the spa: everything paid online is refunded automatically. If online payments aren’t switched on, “Required” falls back to pay at the spa so bookings never stop.</p>
+      </div>
       <div class="panel" style="margin-bottom:16px">
         <p class="helper-text" style="margin:0;line-height:1.7">Default commission: <strong>${defaultCommission}%</strong> (set <span class="mono">COMMISSION_PERCENT</span> on the server). Rates are locked onto each booking when it’s made.
         <strong>Net</strong> = online money you hold − commission on it − commission on pay-at-spa bookings the spa collected. Positive: you pay the spa. Negative: the spa pays you.
@@ -397,7 +421,7 @@ async function loadSettlements() {
       <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th ${th}>Spa</th><th ${th}>Rate</th><th ${th}>Pay at spa</th><th ${th}>No-shows (90d)</th><th ${th}>Unsettled</th>
+            <th ${th}>Spa</th><th ${th}>Rate</th><th ${th}>Pay at spa</th><th ${th}>Advance</th><th ${th}>No-shows (90d)</th><th ${th}>Unsettled</th>
             <th ${th}>Online held</th><th ${th}>Collected at spa</th><th ${th}>Commission</th><th ${th}>Net</th><th ${th}>Payouts</th><th ${th}></th>
           </tr></thead>
           <tbody>${spas.map(s => {
@@ -406,6 +430,9 @@ async function loadSettlements() {
               <td ${td}><strong>${esc(s.spa_name)}</strong><div class="helper-text">${esc(s.owner_name)} · ${esc(s.owner_phone || '')}</div></td>
               <td ${td}>${s.commission_percent}%${s.custom_rate ? ' <span class="badge pending">custom</span>' : ''}<br><button class="btn small outline" style="margin-top:4px" onclick="editRate(${s.spa_id}, ${s.custom_rate ? s.commission_percent : "''"})">Change</button></td>
               <td ${td}>${s.allow_pay_at_venue ? '✅ Allowed' : '⛔ Online only'}<br><button class="btn small outline" style="margin-top:4px" onclick="togglePayAtSpa(${s.spa_id}, ${!s.allow_pay_at_venue})">${s.allow_pay_at_venue ? 'Require online' : 'Allow'}</button></td>
+              <td ${td}>${s.deposit_policy ? polName[s.deposit_policy] + ' <span class="badge pending">custom</span>' : polName[ps.deposit_policy] + ' <span class="helper-text">(default)</span>'}${s.deposit_amount ? `<div class="mono helper-text" style="margin:2px 0 0">${money(s.deposit_amount)}</div>` : ''}
+                <br><button class="btn small outline" style="margin-top:4px" onclick="editSpaAdvance(${s.spa_id}, '${s.deposit_policy || ''}', '${s.deposit_amount || ''}')">Change</button>
+                ${risky && (s.deposit_policy || ps.deposit_policy) !== 'required' ? '<div class="helper-text" style="margin:4px 0 0;color:var(--plum)">Many no-shows — consider Required</div>' : ''}</td>
               <td ${td}>${s.noShow.noShows}/${s.noShow.total} (${s.noShow.rate}%) ${risky ? '<span class="badge cancelled">review</span>' : ''}</td>
               <td ${td}>${s.count}</td>
               <td ${td} class="mono">${money(s.onlineGross)}</td>
@@ -438,6 +465,25 @@ async function editRate(spaId, current) {
   if (v === null) return;
   try { const r = await API.put(`/admin/spas/${spaId}/commercials`, { commission_percent: v.trim() === '' ? null : Number(v) }); toast(r.message); loadSettlements(); }
   catch (e) { toast(e.message, 'error'); }
+}
+async function savePaySettings() {
+  const body = { deposit_policy: document.getElementById('ps_policy').value, deposit_type: document.getElementById('ps_type').value,
+                 deposit_value: Number(document.getElementById('ps_value').value), booking_fee: Number(document.getElementById('ps_fee').value || 0) };
+  try { const r = await API.put('/admin/payment-settings', body); toast(r.message); loadSettlements(); } catch (e) { toast(e.message, 'error'); }
+}
+async function editSpaAdvance(spaId, policy, amount) {
+  const p = prompt('Advance for this spa: type default, off, optional or required.', policy || 'default');
+  if (p === null) return;
+  const pol = p.trim().toLowerCase();
+  if (!['default', 'off', 'optional', 'required'].includes(pol)) return toast('Please type default, off, optional or required.', 'error');
+  let amt = amount;
+  if (pol !== 'off') { const a = prompt('Advance amount in ₹ for this spa (leave empty to use the platform default).', amount || ''); if (a === null) return; amt = a.trim(); }
+  try { const r = await API.put(`/admin/spas/${spaId}/commercials`, { deposit_policy: pol, deposit_amount: amt === '' ? null : Number(amt) }); toast(r.message); loadSettlements(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+async function refundDone(id) {
+  if (!confirm('Confirm you have refunded this customer yourself (e.g. from the Razorpay dashboard)?')) return;
+  try { const r = await API.put(`/admin/bookings/${id}/refund-done`); toast(r.message); loadBookings(); loadStats(); } catch (e) { toast(e.message, 'error'); }
 }
 async function togglePayAtSpa(spaId, allow) {
   try { await API.put(`/admin/spas/${spaId}/commercials`, { allow_pay_at_venue: allow }); toast(allow ? 'Pay at spa allowed.' : 'This spa now requires online payment.'); loadSettlements(); }

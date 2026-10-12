@@ -22,6 +22,7 @@ const IST = 330 * 60000;
 const ist = (days) => new Date(Date.now() + IST + days * 86400000).toISOString().slice(0, 10);
 const dbq = (sql, ...a) => { const d = new DatabaseSync(DBFILE); try { return d.prepare(sql).all(...a); } finally { d.close(); } };
 const dbx = (sql, ...a) => { const d = new DatabaseSync(DBFILE); try { return d.prepare(sql).run(...a); } finally { d.close(); } };
+const round = (x) => Math.round(x * 100) / 100;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
 
@@ -358,6 +359,106 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
     await j('PUT', `/admin/premium/${grantId}/cancel`, {}, adm);
     ok('cancelling removes access immediately', (await j('GET', '/owner/insights', null, own3)).status === 402);
     ok('customers can’t use Premium endpoints', (await j('GET', '/owner/premium', null, cu)).status === 403);
+
+    group('Advance deposit & booking fee');
+    {
+      const sett1 = async () => (await j('GET', '/admin/settlements', null, adm)).d.spas.find((x) => x.spa_id === 1);
+      const sv2 = (await j('GET', '/spas/1')).d.services.find((x) => x.id === 2);
+      const price = sv2.final_price, rate = 10, expDep = Math.max(199, Math.ceil(price * rate / 100));
+      const qb = (date, startTime) => ({ spaId: 1, serviceId: 2, date, startTime });
+      let q = await j('POST', '/bookings/quote', qb(ist(21), '10:30'), cu);
+      const modes = (q.d.options || []).map((o) => o.mode).join(',');
+      ok('default checkout offers full online, advance and pay at spa', modes === 'online,deposit,pay_at_venue', q.d);
+      const dop = q.d.options.find((o) => o.mode === 'deposit');
+      ok('advance is ₹199 or the commission if higher, rest at the spa', dop.deposit === expDep && dop.payAtSpa === price - expDep && dop.payNow === expDep, dop);
+      ok('quote needs a customer login', (await j('POST', '/bookings/quote', qb(ist(21), '10:30'))).status === 401);
+      ok('booking fee limit enforced', (await j('PUT', '/admin/payment-settings', { booking_fee: 9999 }, adm)).status === 400);
+      ok('percentage advance limit enforced', (await j('PUT', '/admin/payment-settings', { deposit_type: 'percent', deposit_value: 95 }, adm)).status === 400);
+      r = await j('PUT', '/admin/payment-settings', { booking_fee: 20 }, adm);
+      ok('admin sets a ₹20 booking fee', r.status === 200 && r.d.settings.booking_fee === 20, r.d);
+      q = await j('POST', '/bookings/quote', qb(ist(21), '10:30'), cu);
+      ok('fee added to online payments only', q.d.options.find((o) => o.mode === 'online').payNow === price + 20 && q.d.options.find((o) => o.mode === 'deposit').payNow === expDep + 20 && q.d.options.find((o) => o.mode === 'pay_at_venue').payNow === 0, q.d.options);
+      ok('stale price on screen is refused', (await j('POST', '/bookings', { ...qb(ist(21), '10:30'), paymentMode: 'deposit', expectedPayNow: 1 }, cu)).status === 409);
+
+      // Reserve with advance → pay → visit → balance at counter → settlement
+      const before = await sett1();
+      r = await j('POST', '/bookings', { ...qb(ist(21), '10:30'), paymentMode: 'deposit', expectedPayNow: expDep + 20 }, cu);
+      const db1 = r.d.booking;
+      ok('advance booking holds the slot until paid', r.status === 201 && db1.status === 'pending_payment' && db1.payment_mode === 'pay_at_venue' && db1.deposit_amount === expDep && db1.deposit_status === 'pending' && db1.booking_fee === 20, r.d);
+      let co = await j('POST', `/bookings/${db1.id}/checkout`, {}, cu);
+      ok('checkout charges advance + fee only', co.status === 200 && co.d.amountPaise === (expDep + 20) * 100, co.d);
+      r = await retry(async () => { const c = await j('POST', `/bookings/${db1.id}/checkout`, {}, cu); return j('POST', `/bookings/${db1.id}/verify`, { mode: 'mock', orderId: c.d.orderId, paymentId: 'pay_dep1', signature: 'm' }, cu); });
+      let row = dbq('SELECT * FROM bookings WHERE id=?', db1.id)[0];
+      ok('paying the advance confirms; balance still due at the spa', row.status === 'confirmed' && row.deposit_status === 'paid' && row.payment_status === 'unpaid', row);
+      ok('payment recorded for advance + fee', dbq("SELECT amount FROM payments WHERE booking_id=? AND status='success'", db1.id)[0].amount === expDep + 20);
+      const mine = (await j('GET', '/bookings/me', null, cu)).d.bookings.find((x) => x.id === db1.id);
+      ok('customer sees the advance in My bookings', mine.deposit_status === 'paid' && mine.deposit_amount === expDep);
+      dbx("UPDATE bookings SET status='completed' WHERE id=?", db1.id);
+      const after = await sett1();
+      ok('settlement: advance is money we hold, rest collected by the spa', round(after.onlineGross - before.onlineGross) === expDep && round(after.venueGross - before.venueGross) === price - expDep, { before, after });
+      ok('settlement: commission on the full price', round(after.commissionTotal - before.commissionTotal) === round(price * rate / 100));
+      ok('settlement: booking fee is not part of the spa’s money', round(after.netToSpa - before.netToSpa) === round(expDep - price * rate / 100));
+      r = await j('PUT', `/owner/bookings/${db1.id}/mark-paid`, { method: 'upi' }, own);
+      ok('counter payment records just the balance', r.status === 200 && dbq("SELECT amount FROM payments WHERE booking_id=? AND transaction_ref LIKE 'COUNTER_%'", db1.id)[0].amount === price - expDep, r.d);
+      const inv = (await j('GET', `/bookings/${db1.id}/invoice`, null, cu)).d.invoice || (await j('GET', `/bookings/${db1.id}/invoice`, null, cu)).d;
+      ok('invoice shows advance, counter payment and the fee separately', JSON.stringify(inv).includes('Advance paid online') && inv.platform_fee === 20, inv);
+
+      // No-show keeps the advance for the spa (minus commission)
+      r = await j('POST', '/bookings', { ...qb(ist(22), '10:30'), paymentMode: 'deposit' }, cu);
+      const db2 = r.d.booking;
+      await retry(async () => { const c = await j('POST', `/bookings/${db2.id}/checkout`, {}, cu); return j('POST', `/bookings/${db2.id}/verify`, { mode: 'mock', orderId: c.d.orderId, paymentId: 'pay_dep2', signature: 'm' }, cu); });
+      ok('no-show not allowed before the day', (await j('PUT', `/owner/bookings/${db2.id}/status`, { status: 'no_show' }, own)).status === 400);
+      dbx('UPDATE bookings SET booking_date=? WHERE id=?', ist(0), db2.id);
+      const b4 = await sett1();
+      r = await j('PUT', `/owner/bookings/${db2.id}/status`, { status: 'no_show' }, own);
+      row = dbq('SELECT * FROM bookings WHERE id=?', db2.id)[0];
+      ok('no-show keeps the advance', r.status === 200 && row.deposit_status === 'forfeited' && row.cancel_reason === 'no_show' && row.commission_amount === round(expDep * rate / 100), { r: r.d, row });
+      const a4 = await sett1();
+      ok('kept advance is paid to the spa minus commission', round(a4.onlineGross - b4.onlineGross) === expDep && round(a4.netToSpa - b4.netToSpa) === round(expDep - expDep * rate / 100), { b4, a4 });
+
+      // Cancelling inside the free window refunds advance + fee
+      r = await j('POST', '/bookings', { ...qb(ist(23), '10:30'), paymentMode: 'deposit' }, cu);
+      const db3 = r.d.booking;
+      await retry(async () => { const c = await j('POST', `/bookings/${db3.id}/checkout`, {}, cu); return j('POST', `/bookings/${db3.id}/verify`, { mode: 'mock', orderId: c.d.orderId, paymentId: 'pay_dep3', signature: 'm' }, cu); });
+      r = await j('PUT', `/bookings/${db3.id}/cancel`, {}, cu);
+      row = dbq('SELECT * FROM bookings WHERE id=?', db3.id)[0];
+      ok('customer cancel refunds advance + fee', r.status === 200 && new RegExp(`₹${expDep + 20} refund`).test(r.d.message) && row.deposit_status === 'refunded' && row.refund_status === 'refunded', { r: r.d, row });
+
+      // Spa cancels a fully-paid online booking → customer refunded
+      r = await j('POST', '/bookings', { ...qb(ist(24), '10:30'), paymentMode: 'online' }, cu);
+      const ob = r.d.booking;
+      await retry(async () => { const c = await j('POST', `/bookings/${ob.id}/checkout`, {}, cu); return j('POST', `/bookings/${ob.id}/verify`, { mode: 'mock', orderId: c.d.orderId, paymentId: 'pay_on1', signature: 'm' }, cu); });
+      r = await j('PUT', `/owner/bookings/${ob.id}/status`, { status: 'cancelled' }, own);
+      row = dbq('SELECT * FROM bookings WHERE id=?', ob.id)[0];
+      ok('spa cancelling a paid booking refunds the customer', r.status === 200 && row.payment_status === 'refunded' && row.refund_status === 'refunded' && row.cancel_reason === 'owner', { r: r.d, row });
+      ok('cannot cancel twice', (await j('PUT', `/owner/bookings/${ob.id}/status`, { status: 'cancelled' }, own)).status === 409);
+
+      // Paid after the 10-minute hold expired → automatic refund
+      r = await j('POST', '/bookings', { ...qb(ist(25), '10:30'), paymentMode: 'deposit' }, cu);
+      const lb = r.d.booking; co = await j('POST', `/bookings/${lb.id}/checkout`, {}, cu);
+      dbx("UPDATE bookings SET status='cancelled', cancel_reason='payment_timeout', deposit_status='expired' WHERE id=?", lb.id);
+      r = await j('POST', `/bookings/${lb.id}/verify`, { mode: 'mock', orderId: co.d.orderId, paymentId: 'pay_late', signature: 'm' }, cu);
+      row = dbq('SELECT * FROM bookings WHERE id=?', lb.id)[0];
+      ok('late payment is refunded, not lost', r.status === 409 && /refund/.test(r.d.error) && row.refund_status === 'refunded', { r: r.d, row });
+
+      // Required advance and per-spa override
+      await j('PUT', '/admin/payment-settings', { deposit_policy: 'required' }, adm);
+      q = await j('POST', '/bookings/quote', qb(ist(26), '10:30'), cu);
+      ok('required: no zero-advance bookings', !q.d.options.some((o) => o.mode === 'pay_at_venue') && q.d.options.some((o) => o.mode === 'deposit'), q.d.options);
+      r = await j('POST', '/bookings', { ...qb(ist(26), '10:30'), paymentMode: 'pay_at_venue' }, cu);
+      ok('required: pay-at-spa booking refused with a clear reason', r.status === 400 && /advance/.test(r.d.error), r.d);
+      await j('PUT', '/admin/spas/1/commercials', { deposit_policy: 'off' }, adm);
+      q = await j('POST', '/bookings/quote', qb(ist(26), '10:30'), cu);
+      ok('per-spa override switches the advance off', q.d.options.map((o) => o.mode).join(',') === 'online,pay_at_venue', q.d.options);
+      await j('PUT', '/admin/spas/1/commercials', { deposit_policy: 'default', deposit_amount: 500 }, adm);
+      q = await j('POST', '/bookings/quote', qb(ist(26), '10:30'), cu);
+      ok('per-spa advance amount', q.d.options.find((o) => o.mode === 'deposit').deposit === Math.max(500, Math.ceil(price * rate / 100)), q.d.options);
+      ok('bad per-spa policy rejected', (await j('PUT', '/admin/spas/1/commercials', { deposit_policy: 'sometimes' }, adm)).status === 400);
+      const stt = (await j('GET', '/admin/stats', null, adm)).d;
+      ok('admin stats show booking fees', stt.bookingFees === 40 && stt.failedRefunds === 0, { fees: stt.bookingFees, f: stt.failedRefunds });
+      await j('PUT', '/admin/spas/1/commercials', { deposit_policy: 'default', deposit_amount: null }, adm);
+      await j('PUT', '/admin/payment-settings', { deposit_policy: 'optional', booking_fee: 0 }, adm);
+    }
 
     group('Backups');
     r = await j('POST', '/admin/backups', {}, adm);
