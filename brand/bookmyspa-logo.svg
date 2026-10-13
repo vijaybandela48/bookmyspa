@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" role="img" aria-label="BookMySpa — Spa &amp; wellness booking">
+  <style>@import url('https://fonts.googleapis.com/css2?family=Marcellus&amp;family=Figtree:wght@600&amp;display=swap');
+  .w{font-family:'Marcellus',Georgia,serif;font-size:60px;letter-spacing:.5px}.t{font-family:'Figtree',Arial,sans-serif;font-size:14px;font-weight:600;letter-spacing:4.2px}</style>
+  <g transform="translate(4 10) scale(1)">
+    <path d="M50 22 C46 17 54 12 50 6" fill="none" stroke="#D99A3E" stroke-width="4.2" stroke-linecap="round"/>
+    <path d="M48 76 C32 74 18 62 13 46 C30 46 43 56 48 76 Z" fill="#4C7A6A"/>
+    <path d="M52 76 C68 74 82 62 87 46 C70 46 57 56 52 76 Z" fill="#4C7A6A"/>
+    <path d="M50 30 C62 44 62 62 50 77 C38 62 38 44 50 30 Z" fill="#2F5D50"/>
+    <path d="M26 87 H74" fill="none" stroke="#2F5D50" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <text x="118" y="70" class="w" fill="#1F1B24">BookMy<tspan fill="#2F5D50">Spa</tspan></text>
+  <text x="121" y="98" class="t" fill="#5D5866">SPA &amp; WELLNESS BOOKING</text>
+</svg>

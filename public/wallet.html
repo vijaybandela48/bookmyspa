@@ -6,9 +6,10 @@
 <title>Wallet — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#23392C">
-<link rel="icon" href="/icons/icon-192.png">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#1F1B24">
+<link rel="icon" href="/icons/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 </head>
 <body>
 <div id="sb-nav"></div>
@@ -45,7 +46,7 @@ function amountChips() {
 function giftCardHtml(g, fresh) {
   const share = `I got you a BookMySpa gift card worth ${money(g.amount)}${g.recipient_name ? ', ' + g.recipient_name : ''}! Use code ${g.code} at checkout on ${location.origin} (valid until ${formatDate(g.expires_at)}).`;
   return `<div class="gift-card ${fresh ? 'fresh' : ''}">
-    <div class="gc-top"><span class="brand" style="color:#F6F1EA">🌿 BookMySpa</span><span class="gc-amt">${money(g.balance ?? g.amount)}</span></div>
+    <div class="gc-top"><span class="brand" style="color:#F6F1EA">${BRAND_MARK} BookMySpa</span><span class="gc-amt">${money(g.balance ?? g.amount)}</span></div>
     <div class="gc-code mono">${esc(g.code)}</div>
     <div class="gc-meta">${g.recipient_name ? 'For ' + esc(g.recipient_name) + ' · ' : ''}${g.balance !== undefined && g.balance !== g.amount ? 'of ' + money(g.amount) + ' · ' : ''}valid until ${formatDate(g.expires_at)}</div>
     <div class="gc-actions"><button class="btn small outline" onclick="navigator.clipboard.writeText('${g.code}').then(()=>toast('Code copied.'))">Copy code</button>

@@ -1,7 +1,7 @@
 // sw.js — makes BookMySpa installable (PWA / Play Store TWA) and gives an
 // offline fallback for static assets. NETWORK-FIRST: users always get the
 // latest CSS/JS after a deploy; the cache is only used when offline.
-const CACHE_NAME = 'bookmyspa-static-v2';
+const CACHE_NAME = 'bookmyspa-static-v3';
 const STATIC_ASSETS = ['/css/style.css', '/js/api.js', '/icons/icon-192.png', '/icons/icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(STATIC_ASSETS)).catch(() => {}));

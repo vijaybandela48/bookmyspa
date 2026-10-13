@@ -114,6 +114,8 @@ function toast(msg, kind = 'info') {
   el._t = setTimeout(() => el.classList.remove('show'), 3600);
 }
 
+// The Steam Lotus mark, drawn for the dark header and footer.
+const BRAND_MARK = '<svg class="brand-mark" viewBox="0 0 100 100" width="34" height="34" aria-hidden="true"><path d="M50 22 C46 17 54 12 50 6" fill="none" stroke="#D99A3E" stroke-width="5" stroke-linecap="round"/><path d="M48 76 C32 74 18 62 13 46 C30 46 43 56 48 76 Z" fill="#9DB8AC"/><path d="M52 76 C68 74 82 62 87 46 C70 46 57 56 52 76 Z" fill="#9DB8AC"/><path d="M50 30 C62 44 62 62 50 77 C38 62 38 44 50 30 Z" fill="#EDF1EC"/><path d="M26 87 H74" fill="none" stroke="#EDF1EC" stroke-width="5" stroke-linecap="round"/></svg>';
 function renderNav(active) {
   const nav = document.getElementById('sb-nav');
   if (!nav) return;
@@ -133,7 +135,7 @@ function renderNav(active) {
   } else {
     right = user ? `<span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>` : '';
   }
-  nav.innerHTML = `<div class="nav-inner"><a href="${brandHref}" class="brand"><span class="brand-mark">🌿</span> BookMySpa ${tag}</a><div class="nav-right">${right}</div></div>`;
+  nav.innerHTML = `<div class="nav-inner"><a href="${brandHref}" class="brand">${BRAND_MARK} <span>BookMy<span class="brand-accent">Spa</span></span> ${tag}</a><div class="nav-right">${right}</div></div>`;
 }
 
 async function renderFooter() {
@@ -149,7 +151,7 @@ async function renderFooter() {
   footer.innerHTML = `
     <div class="wrap footer-inner">
       <div class="footer-col footer-brand">
-        <div class="brand" style="color:var(--white)"><span class="brand-mark">🌿</span> BookMySpa</div>
+        <div class="brand" style="color:var(--white)">${BRAND_MARK} <span>BookMy<span class="brand-accent">Spa</span></span></div>
         <p>${PORTAL === 'partner' ? 'Fill your empty slots, cut no-shows, and manage every booking in one place.' : 'Book massage and spa appointments online — browse nearby spas, compare prices, and pay securely.'}</p>
       </div>
       <div class="footer-col"><h5>Company</h5><a href="/about.html">About us</a><a href="/contact.html">Contact us</a></div>

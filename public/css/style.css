@@ -75,7 +75,8 @@ label:first-child { margin-top: 0; }
   height: 64px; display: flex; align-items: center; justify-content: space-between;
 }
 .brand { font-family: 'Marcellus', Georgia, serif; font-size: 21px; font-weight: 700; color: var(--white); display: flex; align-items: center; gap: 8px; }
-.brand-mark { font-size: 20px; }
+.brand-mark { width: 34px; height: 34px; flex: none; display: block; margin-top: -4px; }
+.brand-accent { color: var(--gold); }
 .nav-right { display: flex; align-items: center; gap: 18px; }
 .nav-link { color: rgba(255,255,255,0.82); font-weight: 500; font-size: 14.5px; }
 .nav-link:hover, .nav-link.active { color: var(--white); }

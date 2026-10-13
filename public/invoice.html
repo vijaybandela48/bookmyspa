@@ -6,9 +6,10 @@
 <title>Invoice — BookMySpa</title>
 <link rel="stylesheet" href="/css/style.css">
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#23392C">
-<link rel="icon" href="/icons/icon-192.png">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#1F1B24">
+<link rel="icon" href="/icons/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 </head>
 <body>
 <div id="sb-nav"></div>
@@ -35,7 +36,7 @@ async function load() {
     el.innerHTML = `
       <div class="inv-head">
         <div><h2 style="margin:0">${esc(v.title)}</h2><p class="helper-text" style="margin:4px 0 0">No. <strong class="mono">${esc(v.invoice_no)}</strong> · ${formatDate(v.issued_at)}</p></div>
-        <div style="text-align:right"><div class="brand" style="color:var(--moss-deep)">🌿 BookMySpa</div></div>
+        <div style="text-align:right"><div class="brand" style="color:var(--moss-deep);justify-content:flex-end"><img src="/icons/logo-mark.svg" alt="" width="34" height="34"> BookMySpa</div></div>
       </div>
       <div class="inv-parties">
         <div><h4>From</h4><p><strong>${esc(v.supplier.name)}</strong>${v.supplier.trade_name && v.supplier.trade_name !== v.supplier.name ? '<br>(' + esc(v.supplier.trade_name) + ')' : ''}<br>${esc(v.supplier.address || '')}${v.supplier.phone ? '<br>' + esc(v.supplier.phone) : ''}${v.supplier.gstin ? '<br>GSTIN <span class="mono">' + esc(v.supplier.gstin) + '</span>' : ''}</p></div>

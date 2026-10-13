@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="BookMySpa">
+  <path d="M50 22 C46 17 54 12 50 6" fill="none" stroke="#D99A3E" stroke-width="3.6" stroke-linecap="round"/>
+  <path d="M40 26 C37 22 43 19 40 14" fill="none" stroke="#D99A3E" stroke-width="3" stroke-linecap="round" stroke-opacity="0.7"/>
+  <path d="M60 26 C57 22 63 19 60 14" fill="none" stroke="#D99A3E" stroke-width="3" stroke-linecap="round" stroke-opacity="0.7"/>
+  <path d="M48 76 C32 74 18 62 13 46 C30 46 43 56 48 76 Z" fill="#9DB8AC"/>
+  <path d="M52 76 C68 74 82 62 87 46 C70 46 57 56 52 76 Z" fill="#9DB8AC"/>
+  <path d="M50 30 C62 44 62 62 50 77 C38 62 38 44 50 30 Z" fill="#EDF1EC"/>
+  <path d="M26 86 H74" fill="none" stroke="#EDF1EC" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M36 93 H64" fill="none" stroke="#EDF1EC" stroke-width="3.2" stroke-linecap="round" stroke-opacity="0.45"/>
+</svg>
