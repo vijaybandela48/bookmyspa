@@ -460,6 +460,65 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
       await j('PUT', '/admin/payment-settings', { deposit_policy: 'optional', booking_fee: 0 }, adm);
     }
 
+    group('Booking times: automatic, fixed, customer clock');
+    {
+      const dS = ist(27), sv = (await j('GET', '/spas/1')).d.services.find((x) => x.id === 2), dur = sv.duration_minutes;
+      const starts = async () => (await j('GET', `/spas/1/slots?serviceId=2&date=${dS}`)).d.slots;
+      const sp = (await j('GET', '/spas/1')).d.spa;
+      const toM = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+      ok('spas start on automatic slots', sp.slot_mode === 'auto');
+      ok('fixed mode needs at least one time', (await j('PUT', '/owner/spas/1', { slot_mode: 'fixed', slot_times: '' }, own)).status === 400);
+      ok('nonsense time rejected', (await j('PUT', '/owner/spas/1', { slot_mode: 'fixed', slot_times: '10:00, 25:00' }, own)).status === 400);
+      r = await j('PUT', '/owner/spas/1', { slot_mode: 'fixed', slot_times: '07:00' }, own);
+      ok('time outside opening hours rejected', r.status === 400 && /outside your opening hours/.test(r.d.error), r.d);
+      r = await j('PUT', '/owner/spas/1', { slot_mode: 'fixed', slot_times: '13:30, 10:00 9:15, 10:00' }, own);
+      ok('owner saves fixed times (sorted, de-duplicated)', r.status === 200 && r.d.spa.slot_mode === 'fixed' && r.d.spa.slot_times === '09:15,10:00,13:30', r.d);
+      ok('customers see exactly those times', (await starts()).map((x) => x.start_time).join(',') === '09:15,10:00,13:30');
+      ok('booking a time not on the list is refused', (await j('POST', '/bookings', { spaId: 1, serviceId: 2, date: dS, startTime: '11:00', paymentMode: 'pay_at_venue' }, cu)).status === 409);
+      r = await j('POST', '/bookings', { spaId: 1, serviceId: 2, date: dS, startTime: '13:30', paymentMode: 'pay_at_venue' }, cu);
+      ok('booking a listed time works', r.status === 201, r.d);
+      ok('bad clock step rejected', (await j('PUT', '/owner/spas/1', { slot_mode: 'flexible', slot_step: 7 }, own)).status === 400);
+      r = await j('PUT', '/owner/spas/1', { slot_mode: 'flexible', slot_step: 15 }, own);
+      ok('owner switches to customer-picks-a-time', r.status === 200 && r.d.spa.slot_mode === 'flexible' && r.d.spa.slot_step === 15, r.d);
+      const fl = await starts();
+      const open = toM(r.d.spa.opening_time), close = toM(r.d.spa.closing_time);
+      ok('clock offers every 15 minutes within hours', fl.length === Math.floor((close - dur - open) / 15) + 1 && fl.every((x) => (toM(x.start_time) - open) % 15 === 0), fl.length);
+      const at = (t) => fl.find((x) => x.start_time === t);
+      const endM = 13 * 60 + 30 + dur, endT = `${String(Math.floor(endM / 60)).padStart(2, '0')}:${String(endM % 60).padStart(2, '0')}`;
+      const before = `${String(Math.floor((endM - 15) / 60)).padStart(2, '0')}:${String((endM - 15) % 60).padStart(2, '0')}`;
+      ok('overlapping times share the room correctly', at(before).spots_left === at(before).capacity - 1 && at(endT).spots_left === at(endT).capacity, { b: at(before), e: at(endT) });
+      r = await j('POST', '/bookings', { spaId: 1, serviceId: 2, date: dS, startTime: '16:45', paymentMode: 'pay_at_venue' }, cu);
+      ok('customer books an off-grid clock time (16:45)', r.status === 201 && r.d.booking.start_time === '16:45', r.d);
+      ok('time off the 15-minute mark refused', (await j('POST', '/bookings', { spaId: 1, serviceId: 2, date: dS, startTime: '16:50', paymentMode: 'pay_at_venue' }, cu)).status === 409);
+      ok('other owners can’t change it', (await j('PUT', '/owner/spas/1', { slot_mode: 'auto' }, own2)).status === 404);
+      await j('PUT', '/owner/spas/1', { slot_mode: 'auto' }, own);
+      ok('back to automatic slots', (await starts()).every((x) => (toM(x.start_time) - open) % dur === 0));
+    }
+
+    group('Per-spa ways to pay (admin)');
+    {
+      const qb = { spaId: 1, serviceId: 2, date: ist(28), startTime: '10:30' };
+      const modes = async () => ((await j('POST', '/bookings/quote', qb, cu)).d.options || []).map((o) => o.mode).join(',');
+      ok('default spa offers all three', (await modes()) === 'online,deposit,pay_at_venue');
+      ok('must pick at least one option', (await j('PUT', '/admin/spas/1/commercials', { payment_options: 'nonsense' }, adm)).status === 400);
+      ok('booking fee over ₹500 rejected', (await j('PUT', '/admin/spas/1/commercials', { booking_fee: 600 }, adm)).status === 400);
+      r = await j('PUT', '/admin/spas/1/commercials', { payment_options: 'deposit', booking_fee: 30 }, adm);
+      let q = (await j('POST', '/bookings/quote', qb, cu)).d;
+      ok('advance only, with this spa’s own ₹30 fee', r.status === 200 && q.options.map((o) => o.mode).join(',') === 'deposit' && q.options[0].fee === 30 && q.options[0].payNow === q.options[0].deposit + 30, q);
+      ok('pay-at-spa refused for an advance-only spa', (await j('POST', '/bookings', { ...qb, paymentMode: 'pay_at_venue' }, cu)).status === 400);
+      await j('PUT', '/admin/spas/1/commercials', { payment_options: 'venue' }, adm);
+      ok('pay at spa only', (await modes()) === 'pay_at_venue');
+      r = await j('POST', '/bookings', { ...qb, paymentMode: 'online' }, cu);
+      ok('full online refused with a clear reason', r.status === 400 && /doesn’t take full payment online/.test(r.d.error), r.d);
+      await j('PUT', '/admin/spas/1/commercials', { payment_options: 'online,venue' }, adm);
+      ok('full online + pay at spa', (await modes()) === 'online,pay_at_venue');
+      const row = (await j('GET', '/admin/settlements', null, adm)).d.spas.find((x) => x.spa_id === 1);
+      ok('admin sees the spa’s own choice and fee', row.payment_custom === true && row.payment_options.join(',') === 'online,venue' && row.booking_fee === 30, row);
+      ok('other spas unaffected', ((await j('POST', '/bookings/quote', { spaId: 2, serviceId: 5, date: ist(28), startTime: '11:00' }, cu)).d.options || []).length === 3);
+      await j('PUT', '/admin/spas/1/commercials', { payment_options: null, booking_fee: null }, adm);
+      ok('back to the platform default', (await modes()) === 'online,deposit,pay_at_venue' && (await j('POST', '/bookings/quote', qb, cu)).d.fee === 0);
+    }
+
     group('Backups');
     r = await j('POST', '/admin/backups', {}, adm);
     ok('manual backup works', r.status === 201 && /manual\.db$/.test(r.d.name), r);

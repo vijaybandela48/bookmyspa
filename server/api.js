@@ -140,6 +140,7 @@ function publicSpa(s) {
     latitude: s.latitude, longitude: s.longitude,
     allow_pay_at_venue: s.allow_pay_at_venue !== 0,
     weekly_off: s.weekly_off || '', cancel_window_hours: s.cancel_window_hours ?? 4,
+    slot_mode: s.slot_mode || 'auto', slot_step: s.slot_step || 15, slot_times: s.slot_times || '',
     legal_name: s.legal_name || null, gstin: s.gstin || null, gst_rate: s.gst_rate ?? 18,
     ...featuredInfo(s.id),
     owner_id: s.owner_id,
@@ -558,6 +559,31 @@ function validatePackage(b, spaId) {
   return null;
 }
 
+// When customers may start: 'auto' = back-to-back slots of the service's length (the original behaviour),
+// 'fixed' = the owner's own list of start times, 'flexible' = any time on a clock, every slot_step minutes.
+const SLOT_MODES = ['auto', 'fixed', 'flexible'];
+const SLOT_STEPS = [5, 10, 15, 20, 30, 60];
+function slotStarts(spa, openMin, closeMin, duration) {
+  const out = [];
+  if (spa.slot_mode === 'fixed' && spa.slot_times) {
+    for (const t of String(spa.slot_times).split(',')) { const m = timeToMinutes(t.trim()); if (m >= openMin && m + duration <= closeMin) out.push(m); }
+    return [...new Set(out)].sort((a, b) => a - b);
+  }
+  const step = spa.slot_mode === 'flexible' && SLOT_STEPS.includes(spa.slot_step) ? spa.slot_step : duration;
+  for (let m = openMin; m + duration <= closeMin; m += step) out.push(m);
+  return out;
+}
+function parseSlotTimes(text) {
+  const parts = String(text || '').split(/[\s,;]+/).filter(Boolean);
+  const out = [];
+  for (const p of parts) {
+    const m = /^(\d{1,2})[:.](\d{2})$/.exec(p);
+    if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return { error: `“${p}” isn’t a time. Use 24-hour times like 10:00, 13:30, 18:45.` };
+    out.push(`${m[1].padStart(2, '0')}:${m[2]}`);
+  }
+  return { times: [...new Set(out)].sort() };
+}
+
 function getAvailableSlots(spa, service, date, opts = {}) {
   cleanupStaleBookings();
   if (closureReason(spa, date)) return [];
@@ -595,24 +621,22 @@ function getAvailableSlots(spa, service, date, opts = {}) {
   const nowLocal = localNow();
   const isToday = date === nowLocal.date;
   const nowMinutes = nowLocal.minutes;
+  // Rooms in use at the busiest moment of [start, end): bookings and walk-in blocks that
+  // overlap each other count together; ones that merely touch the window at different times don't.
+  const busy = [...relevantBookings.map((b) => ({ s: timeToMinutes(b.start_time), e: timeToMinutes(b.end_time), q: 1 })),
+                ...blocks.filter((bl) => bl.room_type_id !== null).map((bl) => ({ s: timeToMinutes(bl.start_time), e: timeToMinutes(bl.end_time), q: bl.qty }))];
+  const peakInUse = (start, end) => {
+    const hits = busy.filter((x) => start < x.e && end > x.s);
+    let peak = 0;
+    for (const t of new Set([start, ...hits.map((x) => Math.max(x.s, start))])) peak = Math.max(peak, hits.filter((x) => x.s <= t && x.e > t).reduce((a, x) => a + x.q, 0));
+    return peak;
+  };
 
-  for (let start = openMin; start + duration <= closeMin; start += duration) {
+  for (const start of slotStarts(spa, openMin, closeMin, duration)) {
     const end = start + duration;
     if (isToday && start <= nowMinutes) continue; // skip past slots today
-
-    const overlapCount = relevantBookings.filter((b) => {
-      const bStart = timeToMinutes(b.start_time);
-      const bEnd = timeToMinutes(b.end_time);
-      return start < bEnd && end > bStart;
-    }).length;
-    let blocked = 0, wholeSpa = false;
-    for (const bl of blocks) {
-      if (start < timeToMinutes(bl.end_time) && end > timeToMinutes(bl.start_time)) {
-        if (bl.room_type_id === null) wholeSpa = true; else blocked += bl.qty;
-      }
-    }
-
-    const spotsLeft = wholeSpa ? 0 : Math.max(0, capacity - overlapCount - blocked);
+    const wholeSpa = blocks.some((bl) => bl.room_type_id === null && start < timeToMinutes(bl.end_time) && end > timeToMinutes(bl.start_time));
+    const spotsLeft = wholeSpa ? 0 : Math.max(0, capacity - peakInUse(start, end));
     const freeTherapists = hasTherapists
       ? eligible.filter((t) => !tBookings.some((b) => b.therapist_id === t.id && start < timeToMinutes(b.end_time) && end > timeToMinutes(b.start_time))).length
       : null;
@@ -1123,7 +1147,8 @@ async function handleApi(req, res, pathname, query) {
       const wanted = prepaid ? 'prepaid' : ['online', 'deposit', 'pay_at_venue'].includes(body.paymentMode) ? body.paymentMode : 'online';
       const option = pay.options.find((o) => o.mode === wanted);
       if (!option) {
-        const err = wanted === 'online' ? "Online payment isn't available yet — please choose Pay at the spa."
+        const err = wanted === 'online' && onlinePaymentsAvailable() ? 'This spa doesn’t take full payment online. Please choose another way to pay.'
+          : wanted === 'online' ? "Online payment isn't available yet — please choose Pay at the spa."
           : wanted === 'pay_at_venue' && pay.options.some((o) => o.mode === 'deposit') ? `This spa needs a small advance (₹${pay.deposit}) to hold your slot. You pay the rest at the spa.`
           : wanted === 'pay_at_venue' ? 'This spa requires online payment to confirm a booking.'
           : 'An advance payment isn’t available for this booking. Please choose another way to pay.';
@@ -1436,7 +1461,23 @@ async function handleApi(req, res, pathname, query) {
       }
       if (body.gst_rate !== undefined && ![5, 12, 18].includes(Number(body.gst_rate))) return sendJSON(res, 400, { error: 'GST rate must be 5%, 12% or 18%.' });
       if (body.gst_rate !== undefined) body.gst_rate = Number(body.gst_rate);
-      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude', 'weekly_off', 'cancel_window_hours', 'legal_name', 'gstin', 'gst_rate'];
+      if (body.slot_mode !== undefined && !SLOT_MODES.includes(body.slot_mode)) return sendJSON(res, 400, { error: 'Choose automatic slots, your own fixed times, or let customers pick a time.' });
+      if (body.slot_step !== undefined) {
+        body.slot_step = Number(body.slot_step);
+        if (!SLOT_STEPS.includes(body.slot_step)) return sendJSON(res, 400, { error: 'Time steps can be 5, 10, 15, 20, 30 or 60 minutes.' });
+      }
+      if (body.slot_times !== undefined) {
+        const r = parseSlotTimes(body.slot_times);
+        if (r.error) return sendJSON(res, 400, { error: r.error });
+        if (r.times.length > 48) return sendJSON(res, 400, { error: 'Add at most 48 start times.' });
+        const outside = r.times.filter((t) => t < newOpen || t >= newClose);
+        if (outside.length) return sendJSON(res, 400, { error: `${outside.join(', ')} ${outside.length > 1 ? 'are' : 'is'} outside your opening hours (${newOpen}–${newClose}).` });
+        body.slot_times = r.times.join(',') || null;
+      }
+      if ((body.slot_mode ?? spa.slot_mode) === 'fixed' && !(body.slot_times !== undefined ? body.slot_times : spa.slot_times)) {
+        return sendJSON(res, 400, { error: 'Add at least one start time for fixed time slots.' });
+      }
+      const fields = ['name', 'description', 'city', 'address', 'phone', 'opening_time', 'closing_time', 'cover_emoji', 'latitude', 'longitude', 'weekly_off', 'cancel_window_hours', 'legal_name', 'gstin', 'gst_rate', 'slot_mode', 'slot_step', 'slot_times'];
       const updates = [];
       const args = [];
       for (const f of fields) {
@@ -2367,10 +2408,11 @@ async function handleApi(req, res, pathname, query) {
         const sum = settlementSummary(s.id); delete sum.bookingIds;
         return { spa_id: s.id, spa_name: s.name, owner_name: s.owner_name, owner_phone: s.owner_phone, commission_percent: commissionRateFor(s),
                  custom_rate: s.commission_percent !== null, allow_pay_at_venue: s.allow_pay_at_venue !== 0, noShow: noShowStats(s.id), payout_account: s.razorpay_account_id || null,
-                 deposit_policy: s.deposit_policy || null, deposit_amount: s.deposit_amount || null, ...sum };
+                 deposit_policy: s.deposit_policy || null, deposit_amount: s.deposit_amount || null,
+                 payment_options: deposits.effectiveOptions(s).list, payment_custom: !!s.payment_options, booking_fee: s.booking_fee ?? null, ...sum };
       });
       const history = db.prepare(`SELECT st.*, s.name AS spa_name FROM settlements st JOIN spas s ON s.id = st.spa_id ORDER BY st.created_at DESC LIMIT 100`).all();
-      return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION, payments: deposits.getSettings() });
+      return sendJSON(res, 200, { spas: rows, history, defaultCommission: DEFAULT_COMMISSION, payments: deposits.getSettings(), onlinePayments: onlinePaymentsAvailable() });
     }
 
     if (parts[1] === 'admin' && parts[2] === 'spas' && parts[4] === 'settle' && req.method === 'POST') {
@@ -2420,6 +2462,20 @@ async function handleApi(req, res, pathname, query) {
         const v = body.deposit_policy === '' || body.deposit_policy === null || body.deposit_policy === 'default' ? null : body.deposit_policy;
         if (v !== null && !deposits.POLICIES.includes(v)) return sendJSON(res, 400, { error: 'Advance must be Default, Off, Optional or Required.' });
         db.prepare('UPDATE spas SET deposit_policy = ? WHERE id = ?').run(v, spa.id);
+      }
+      if (body.payment_options !== undefined) {
+        if (body.payment_options === null || body.payment_options === '' || body.payment_options === 'default') {
+          db.prepare('UPDATE spas SET payment_options = NULL WHERE id = ?').run(spa.id);
+        } else {
+          const list = deposits.parseOptions(body.payment_options);
+          if (!list.length) return sendJSON(res, 400, { error: 'Pick at least one way for customers to pay.' });
+          db.prepare('UPDATE spas SET payment_options = ?, allow_pay_at_venue = ? WHERE id = ?').run(list.join(','), list.includes('venue') ? 1 : 0, spa.id);
+        }
+      }
+      if (body.booking_fee !== undefined) {
+        const v = body.booking_fee === '' || body.booking_fee === null ? null : Math.round(Number(body.booking_fee));
+        if (v !== null && !(v >= 0 && v <= 500)) return sendJSON(res, 400, { error: 'The booking fee must be between ₹0 and ₹500 (leave empty for the platform default).' });
+        db.prepare('UPDATE spas SET booking_fee = ? WHERE id = ?').run(v, spa.id);
       }
       if (body.deposit_amount !== undefined) {
         const v = body.deposit_amount === '' || body.deposit_amount === null ? null : Math.round(Number(body.deposit_amount));

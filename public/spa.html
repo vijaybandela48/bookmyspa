@@ -289,7 +289,7 @@ function renderBookingPanel() {
     <select id="dateSelect">
       ${dateOptions().map(d => `<option value="${d}" ${d===selectedDate?'selected':''}>${formatDate(d)}</option>`).join('')}
     </select>
-    <label>Available times</label>
+    <label>${spaData.slot_mode === 'flexible' ? 'Pick a start time' : 'Available times'}</label>
     <div class="slot-grid" id="slotGrid"><p class="helper-text">Loading times…</p></div>
     <button class="btn gold block" id="bookBtn" disabled onclick="openPayModal()">Select a time slot</button>
   `;
@@ -304,10 +304,12 @@ async function loadSlots() {
   grid.innerHTML = '<p class="helper-text">Loading times…</p>';
   try {
     const { slots, closed } = await API.get(`/spas/${spaId}/slots?serviceId=${selectedServiceId}&date=${selectedDate}${tChoice.therapistId ? '&therapistId=' + tChoice.therapistId : tChoice.gender ? '&gender=' + tChoice.gender : ''}`);
-    if (!slots.length) {
+    lastSlots = slots;
+    if (!slots.length || (spaData.slot_mode === 'flexible' && !slots.some(s => s.available))) {
       grid.innerHTML = `<p class="helper-text">${closed ? esc(closed) + ' — please pick another day.' : 'No times left this day — please pick another day.'}</p>`;
       return;
     }
+    if (spaData.slot_mode === 'flexible') return renderClock(grid, slots);
     grid.innerHTML = slots.map(s => `
       <div class="slot ${s.available ? 'available' : 'unavailable'} ${selectedSlot===s.start_time ? 'selected' : ''}"
            ${s.available ? `onclick="pickSlot('${s.start_time}')"` : ''}
@@ -321,6 +323,42 @@ async function loadSlots() {
   } catch (e) {
     grid.innerHTML = `<p class="helper-text">${e.message}</p>`;
   }
+}
+
+// "Customer picks a time" spas: a clock input plus free times grouped by part of the day.
+let lastSlots = [];
+function renderClock(grid, slots) {
+  const free = slots.filter(s => s.available);
+  const step = spaData.slot_step || 15;
+  const groups = [['Morning', 0, 720], ['Afternoon', 720, 1020], ['Evening', 1020, 1440]]
+    .map(([name, a, b]) => [name, free.filter(s => { const m = toMinutes(s.start_time); return m >= a && m < b; })]).filter(([, l]) => l.length);
+  grid.className = 'clock-pick';
+  grid.innerHTML = `
+    <div class="clock-row">
+      <label for="clockInput" class="sr-only">Start time</label>
+      <input type="time" id="clockInput" step="${step * 60}" min="${slots[0].start_time}" max="${slots[slots.length - 1].start_time}" value="${selectedSlot || ''}" onchange="clockPicked(this.value)">
+      <span class="helper-text" style="margin:0">Any time, every ${step} min</span>
+    </div>
+    <p class="helper-text" id="clockMsg" style="margin:6px 0 0"></p>
+    ${groups.map(([name, list]) => `<div class="clock-group"><div class="clock-label">${name}</div><div class="slot-grid">${list.map(s => `<div class="slot available ${selectedSlot === s.start_time ? 'selected' : ''}" onclick="pickSlot('${s.start_time}')">${formatTime(s.start_time)}</div>`).join('')}</div></div>`).join('')}`;
+  if (selectedSlot) clockPicked(selectedSlot, true);
+}
+function toMinutes(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
+function clockPicked(value, quiet) {
+  const msg = document.getElementById('clockMsg'), btn = document.getElementById('bookBtn');
+  if (!value) return;
+  const slot = lastSlots.find(s => s.start_time === value);
+  if (slot && slot.available) {
+    if (!quiet) return pickSlot(value);
+    msg.textContent = `✓ ${formatTime(value)} is free.`; msg.style.color = 'var(--moss)';
+    return;
+  }
+  selectedSlot = null; btn.disabled = true; btn.textContent = 'Select a time slot';
+  const near = lastSlots.filter(s => s.available).sort((a, b) => Math.abs(toMinutes(a.start_time) - toMinutes(value)) - Math.abs(toMinutes(b.start_time) - toMinutes(value))).slice(0, 3);
+  const step = spaData.slot_step || 15;
+  msg.style.color = 'var(--plum)';
+  msg.innerHTML = (!slot && toMinutes(value) % step ? `Please choose a time on a ${step}-minute mark. ` : `${formatTime(value)} isn’t available. `)
+    + (near.length ? `Nearest free: ${near.map(s => `<button type="button" class="link-btn" onclick="pickSlot('${s.start_time}')">${formatTime(s.start_time)}</button>`).join(', ')}` : '');
 }
 
 function pickSlot(start) {

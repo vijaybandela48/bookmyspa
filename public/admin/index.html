@@ -50,6 +50,26 @@
   <div id="tab-messages" style="display:none"><div id="messageList"><p>Loading…</p></div></div>
 </div>
 
+<div class="modal-overlay" id="payOptModal">
+  <div class="modal" style="max-width:520px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0" id="po_title">How customers pay</h3><button class="btn small outline" onclick="document.getElementById('payOptModal').classList.remove('open')">Close</button></div>
+    <label class="slot-mode" style="margin-top:14px"><input type="checkbox" id="po_default" onchange="poDefaultChanged()"><span><strong>Use the platform default</strong><small id="po_default_desc"></small></span></label>
+    <fieldset class="slot-modes" id="po_choices" style="margin-top:12px">
+      <legend class="clock-label" style="margin-bottom:6px">Ways to pay at checkout (pick one or more)</legend>
+      <label class="slot-mode"><input type="checkbox" value="online" class="po-opt"><span><strong>Full amount online</strong><small>Customer pays the whole price when booking.</small></span></label>
+      <label class="slot-mode"><input type="checkbox" value="deposit" class="po-opt"><span><strong>Booking amount (advance) online</strong><small>A small advance holds the slot; the rest is paid at the spa. Never less than your commission.</small></span></label>
+      <label class="slot-mode"><input type="checkbox" value="venue" class="po-opt"><span><strong>Pay at the spa</strong><small>Nothing online. The spa collects everything at the visit.</small></span></label>
+    </fieldset>
+    <div class="form-row" style="margin-top:6px">
+      <div><label for="po_dep">Advance for this spa (₹)</label><input id="po_dep" type="number" min="1" max="10000" step="1" placeholder="Default"></div>
+      <div><label for="po_fee">Booking fee for this spa (₹)</label><input id="po_fee" type="number" min="0" max="500" step="1" placeholder="Default"></div>
+    </div>
+    <p class="helper-text" id="po_note" style="margin:8px 0 0">Leave a box empty to use the platform default. The booking fee is added to online payments only.</p>
+    <p class="helper-text" id="po_warn" style="margin:8px 0 0;color:var(--plum)" hidden></p>
+    <div style="display:flex;gap:10px;margin-top:18px"><button class="btn outline block" onclick="document.getElementById('payOptModal').classList.remove('open')">Cancel</button><button class="btn gold block" onclick="savePayOptions()">Save</button></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="detailModal">
   <div class="modal" style="max-width:640px;max-height:85vh;overflow-y:auto">
     <div id="detailModalBody"></div>
@@ -392,7 +412,8 @@ async function loadSettlements() {
   const el = document.getElementById('settlementList');
   el.innerHTML = '<p>Loading…</p>';
   try {
-    const { spas, history, defaultCommission, payments: ps } = await API.get('/admin/settlements');
+    const { spas, history, defaultCommission, payments: ps, onlinePayments } = await API.get('/admin/settlements');
+    poCtx = { spas, ps, onlinePayments };
     const polName = { off: 'Off', optional: 'Optional', required: 'Required' };
     const th = 'style="padding:10px 12px;white-space:nowrap"', td = 'style="padding:10px 12px;vertical-align:top"';
     el.innerHTML = `
@@ -400,7 +421,7 @@ async function loadSettlements() {
         <h3 style="margin:0 0 4px">🔒 Advance &amp; booking fee</h3>
         <p class="helper-text" style="margin:0 0 14px;line-height:1.6">An <strong>advance</strong> lets customers reserve with a small online payment and pay the rest at the spa. It cuts no-shows, and because it is never less than your commission, you always collect commission — even when the rest is paid in cash. A <strong>booking fee</strong> is a flat charge added to every online payment; it’s yours and isn’t shared with the spa.</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end">
-          <div><label for="ps_policy">Advance at checkout</label>
+          <div><label for="ps_policy">Default for spas (each spa can be changed below)</label>
             <select id="ps_policy">
               <option value="optional" ${ps.deposit_policy === 'optional' ? 'selected' : ''}>Optional — customer chooses</option>
               <option value="required" ${ps.deposit_policy === 'required' ? 'selected' : ''}>Required on every booking</option>
@@ -422,7 +443,7 @@ async function loadSettlements() {
       <div class="panel" style="padding:0;overflow:auto">
         <table style="width:100%;border-collapse:collapse;font-size:13.5px">
           <thead><tr style="background:var(--stone-dark);text-align:left">
-            <th ${th}>Spa</th><th ${th}>Rate</th><th ${th}>Pay at spa</th><th ${th}>Advance</th><th ${th}>No-shows (90d)</th><th ${th}>Unsettled</th>
+            <th ${th}>Spa</th><th ${th}>Rate</th><th ${th}>How customers pay</th><th ${th}>No-shows (90d)</th><th ${th}>Unsettled</th>
             <th ${th}>Online held</th><th ${th}>Collected at spa</th><th ${th}>Commission</th><th ${th}>Net</th><th ${th}>Payouts</th><th ${th}></th>
           </tr></thead>
           <tbody>${spas.map(s => {
@@ -430,10 +451,10 @@ async function loadSettlements() {
             return `<tr style="border-top:1px solid var(--line)">
               <td ${td}><strong>${esc(s.spa_name)}</strong><div class="helper-text">${esc(s.owner_name)} · ${esc(s.owner_phone || '')}</div></td>
               <td ${td}>${s.commission_percent}%${s.custom_rate ? ' <span class="badge pending">custom</span>' : ''}<br><button class="btn small outline" style="margin-top:4px" onclick="editRate(${s.spa_id}, ${s.custom_rate ? s.commission_percent : "''"})">Change</button></td>
-              <td ${td}>${s.allow_pay_at_venue ? '✅ Allowed' : '⛔ Online only'}<br><button class="btn small outline" style="margin-top:4px" onclick="togglePayAtSpa(${s.spa_id}, ${!s.allow_pay_at_venue})">${s.allow_pay_at_venue ? 'Require online' : 'Allow'}</button></td>
-              <td ${td}>${s.deposit_policy ? polName[s.deposit_policy] + ' <span class="badge pending">custom</span>' : polName[ps.deposit_policy] + ' <span class="helper-text">(default)</span>'}${s.deposit_amount ? `<div class="mono helper-text" style="margin:2px 0 0">${money(s.deposit_amount)}</div>` : ''}
-                <br><button class="btn small outline" style="margin-top:4px" onclick="editSpaAdvance(${s.spa_id}, '${s.deposit_policy || ''}', '${s.deposit_amount || ''}')">Change</button>
-                ${risky && (s.deposit_policy || ps.deposit_policy) !== 'required' ? '<div class="helper-text" style="margin:4px 0 0;color:var(--plum)">Many no-shows — consider Required</div>' : ''}</td>
+              <td ${td}><div style="display:flex;flex-wrap:wrap;gap:4px;max-width:230px">${payChips(s, ps)}</div>
+                <div class="helper-text" style="margin:4px 0 0">${s.payment_custom ? 'Set for this spa' : 'Platform default'}${s.booking_fee !== null ? ` · fee ${money(s.booking_fee)}` : ''}</div>
+                <button class="btn small outline" style="margin-top:4px" onclick="openPayOptions(${s.spa_id})">Change</button>
+                ${risky && s.payment_options.includes('venue') ? '<div class="helper-text" style="margin:4px 0 0;color:var(--plum)">Many no-shows — consider removing Pay at the spa</div>' : ''}</td>
               <td ${td}>${s.noShow.noShows}/${s.noShow.total} (${s.noShow.rate}%) ${risky ? '<span class="badge cancelled">review</span>' : ''}</td>
               <td ${td}>${s.count}</td>
               <td ${td} class="mono">${money(s.onlineGross)}</td>
@@ -467,6 +488,47 @@ async function editRate(spaId, current) {
   try { const r = await API.put(`/admin/spas/${spaId}/commercials`, { commission_percent: v.trim() === '' ? null : Number(v) }); toast(r.message); loadSettlements(); }
   catch (e) { toast(e.message, 'error'); }
 }
+// ---- Per-spa ways to pay ----
+let poCtx = null, poSpa = null;
+const PO_NAMES = { online: 'Full online', deposit: 'Advance', venue: 'At spa' };
+function payChips(s, ps) {
+  return s.payment_options.map(k => `<span class="badge ${k === 'venue' ? 'pending' : 'confirmed'}">${PO_NAMES[k]}${k === 'deposit' ? ' ' + (s.deposit_amount ? money(s.deposit_amount) : ps.deposit_type === 'percent' ? ps.deposit_value + '%' : money(ps.deposit_value)) : ''}</span>`).join('');
+}
+function openPayOptions(spaId) {
+  poSpa = poCtx.spas.find(x => x.spa_id === spaId);
+  const ps = poCtx.ps;
+  document.getElementById('po_title').textContent = poSpa.spa_name + ': how customers pay';
+  document.getElementById('po_default').checked = !poSpa.payment_custom;
+  document.getElementById('po_default_desc').textContent = `Currently: ${({ optional: 'full online, advance or pay at spa', required: 'full online or advance', off: 'full online or pay at spa' })[ps.deposit_policy]}. Changes when you change the default.`;
+  document.querySelectorAll('.po-opt').forEach(c => { c.checked = poSpa.payment_options.includes(c.value); });
+  document.getElementById('po_dep').value = poSpa.deposit_amount || '';
+  document.getElementById('po_dep').placeholder = 'Default ' + (ps.deposit_type === 'percent' ? ps.deposit_value + '%' : '₹' + ps.deposit_value);
+  document.getElementById('po_fee').value = poSpa.booking_fee ?? '';
+  document.getElementById('po_fee').placeholder = 'Default ₹' + ps.booking_fee;
+  poDefaultChanged();
+  document.getElementById('payOptModal').classList.add('open');
+}
+function poDefaultChanged() {
+  const def = document.getElementById('po_default').checked;
+  document.getElementById('po_choices').disabled = def;
+  document.getElementById('po_choices').style.opacity = def ? .5 : 1;
+  document.querySelectorAll('#payOptModal .slot-mode').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
+  const opts = [...document.querySelectorAll('.po-opt:checked')].map(c => c.value), warn = document.getElementById('po_warn');
+  warn.hidden = poCtx.onlinePayments || def || opts.includes('venue');
+  warn.textContent = 'Online payments aren’t switched on yet, so this spa can’t take bookings until you add Razorpay keys or tick Pay at the spa.';
+}
+document.addEventListener('change', (e) => { if (e.target.classList && e.target.classList.contains('po-opt')) poDefaultChanged(); });
+async function savePayOptions() {
+  const def = document.getElementById('po_default').checked;
+  const opts = [...document.querySelectorAll('.po-opt:checked')].map(c => c.value);
+  if (!def && !opts.length) return toast('Pick at least one way to pay.', 'error');
+  const dep = document.getElementById('po_dep').value.trim(), fee = document.getElementById('po_fee').value.trim();
+  try {
+    const r = await API.put(`/admin/spas/${poSpa.spa_id}/commercials`, { payment_options: def ? null : opts.join(','), deposit_amount: dep === '' ? null : Number(dep), booking_fee: fee === '' ? null : Number(fee) });
+    toast(r.message); document.getElementById('payOptModal').classList.remove('open'); loadSettlements();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 async function savePaySettings() {
   const body = { deposit_policy: document.getElementById('ps_policy').value, deposit_type: document.getElementById('ps_type').value,
                  deposit_value: Number(document.getElementById('ps_value').value), booking_fee: Number(document.getElementById('ps_fee').value || 0) };

@@ -232,6 +232,30 @@
 </div>
 
 <!-- Edit spa details -->
+<div class="modal-overlay" id="slotModal">
+  <div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Booking times</h3><button class="btn small outline" onclick="closeModal('slotModal')">Close</button></div>
+    <p class="helper-text" style="margin:6px 0 14px">Choose how customers pick a start time. Rooms, therapists and walk-in blocks are always checked, so nothing gets double-booked.</p>
+    <fieldset class="slot-modes">
+      <legend class="sr-only">How customers pick a time</legend>
+      <label class="slot-mode"><input type="radio" name="sm" value="auto" onchange="slotModeChanged()"><span><strong>Automatic slots</strong><small>Back-to-back slots the length of each service from opening time, e.g. a 60-min massage at 10:00, 11:00, 12:00.</small></span></label>
+      <label class="slot-mode"><input type="radio" name="sm" value="fixed" onchange="slotModeChanged()"><span><strong>My own fixed times</strong><small>You list the start times you accept, e.g. 10:00, 11:30, 14:00, 17:30.</small></span></label>
+      <label class="slot-mode"><input type="radio" name="sm" value="flexible" onchange="slotModeChanged()"><span><strong>Customer picks a time (clock)</strong><small>Customers choose any start time within your hours, in steps you set.</small></span></label>
+    </fieldset>
+    <div id="sm_fixed" hidden>
+      <label for="sm_times">Start times (24-hour, separated by commas)</label>
+      <input id="sm_times" placeholder="10:00, 11:30, 13:00, 15:00, 17:30" autocomplete="off">
+      <p class="helper-text" id="sm_times_hint" style="margin:4px 0 0"></p>
+    </div>
+    <div id="sm_flex" hidden>
+      <label for="sm_step">Customers can start every</label>
+      <select id="sm_step"><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select>
+      <p class="helper-text" style="margin:4px 0 0">Smaller steps give customers more choice; 15 or 30 minutes keeps your day tidy.</p>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px"><button class="btn outline block" onclick="closeModal('slotModal')">Cancel</button><button class="btn gold block" onclick="saveSlotSettings()">Save booking times</button></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="editSpaModal">
   <div class="modal" style="max-width:620px;max-height:92vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Edit spa details</h3><button class="btn small outline" onclick="closeModal('editSpaModal')">Close</button></div>
@@ -373,6 +397,7 @@ async function loadSpas() {
           <button class="btn small outline" onclick="openMediaManager(${s.id})">📷 Photos &amp; videos</button>
           <button class="btn small outline" onclick="editSpaLocation(${s.id}, ${s.latitude || 'null'}, ${s.longitude || 'null'})">📍 ${s.latitude ? 'Update' : 'Set'} location</button>
           <button class="btn small outline" onclick="openEditSpa(${s.id})">✏️ Edit details &amp; hours</button>
+          <button class="btn small outline" onclick="openSlotSettings(${s.id})">🕒 Booking times · ${({ auto: 'automatic', fixed: 'fixed times', flexible: 'customer picks' })[s.slot_mode || 'auto']}</button>
         </div>
       </div>
     `).join('');
@@ -1080,6 +1105,32 @@ async function replyReview(id) {
 
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// ---------------- Booking times (automatic / fixed / customer clock) ----------------
+let slotSpaId = null;
+function openSlotSettings(id) {
+  slotSpaId = id;
+  const s = mySpas.find(x => x.id === id);
+  document.querySelectorAll('input[name="sm"]').forEach(r => { r.checked = r.value === (s.slot_mode || 'auto'); });
+  document.getElementById('sm_times').value = String(s.slot_times || '').split(',').filter(Boolean).join(', ');
+  document.getElementById('sm_step').value = String(s.slot_step || 15);
+  document.getElementById('sm_times_hint').textContent = `Your hours: ${formatTime(s.opening_time)} – ${formatTime(s.closing_time)}. A time only shows for a service if the service fits before closing.`;
+  slotModeChanged();
+  document.getElementById('slotModal').classList.add('open');
+}
+function slotModeChanged() {
+  const m = (document.querySelector('input[name="sm"]:checked') || {}).value;
+  document.getElementById('sm_fixed').hidden = m !== 'fixed';
+  document.getElementById('sm_flex').hidden = m !== 'flexible';
+  document.querySelectorAll('.slot-mode').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
+}
+async function saveSlotSettings() {
+  const mode = (document.querySelector('input[name="sm"]:checked') || {}).value || 'auto';
+  const body = { slot_mode: mode, slot_step: Number(document.getElementById('sm_step').value) };
+  if (mode === 'fixed') body.slot_times = document.getElementById('sm_times').value;
+  try { await API.put(`/owner/spas/${slotSpaId}`, body); toast('Booking times saved.'); closeModal('slotModal'); loadSpas(); }
+  catch (e) { toast(e.message, 'error'); }
+}
 
 // ---------------- Edit spa details & hours ----------------
 let editSpaId = null;

@@ -42,6 +42,23 @@ function saveSettings(body) {
   return { settings: getSettings() };
 }
 
+// Which ways to pay a spa offers. An admin can set any mix per spa (spas.payment_options,
+// e.g. "online,deposit"); a spa without its own choice follows the platform default policy.
+const OPTION_KEYS = ['online', 'deposit', 'venue'];
+function parseOptions(v) {
+  const list = Array.isArray(v) ? v : String(v || '').split(',');
+  return [...new Set(list.map((x) => String(x).trim()).filter((x) => OPTION_KEYS.includes(x)))];
+}
+function effectiveOptions(spa, s = getSettings()) {
+  if (spa.payment_options) { const list = parseOptions(spa.payment_options); if (list.length) return { list, custom: true }; }
+  const policy = policyFor(spa, s), venueAllowed = spa.allow_pay_at_venue !== 0;
+  const list = ['online'];
+  if (venueAllowed && policy !== 'off') list.push('deposit');
+  if (venueAllowed && policy !== 'required') list.push('venue');
+  return { list, custom: false };
+}
+function feeFor(spa, s = getSettings()) { return spa.booking_fee !== null && spa.booking_fee !== undefined ? spa.booking_fee : s.booking_fee; }
+
 function policyFor(spa, s = getSettings()) { return POLICIES.includes(spa.deposit_policy) ? spa.deposit_policy : s.deposit_policy; }
 
 // The advance for a booking: the spa's own amount (if admin set one) or the platform default,
@@ -56,18 +73,21 @@ function depositFor(spa, due, commission, giftAmount, s = getSettings()) {
 function paymentOptions({ spa, amount, giftAmount = 0, commission = 0, prepaid = false, onlineOk = true }) {
   const s = getSettings();
   if (prepaid) return { fee: 0, options: [{ mode: 'prepaid', payNow: 0, payAtSpa: 0 }] };
-  const due = round2(amount - giftAmount), fee = s.booking_fee, policy = policyFor(spa, s);
-  const venueAllowed = spa.allow_pay_at_venue !== 0;
+  const due = round2(amount - giftAmount), fee = feeFor(spa, s), policy = policyFor(spa, s);
+  const { list, custom } = effectiveOptions(spa, s);
   const options = [];
-  if (onlineOk) options.push({ mode: 'online', payNow: round2(due + fee), payAtSpa: 0, fee });
+  if (onlineOk && list.includes('online')) options.push({ mode: 'online', payNow: round2(due + fee), payAtSpa: 0, fee });
   let deposit = null;
-  if (onlineOk && venueAllowed && policy !== 'off') {
+  if (onlineOk && list.includes('deposit')) {
     const d = depositFor(spa, due, commission, giftAmount, s);
     if (d < due) { deposit = d; options.push({ mode: 'deposit', deposit: d, payNow: round2(d + fee), payAtSpa: round2(due - d), fee }); }
+    // A service cheaper than the advance is simply paid in full online, even if the spa doesn't offer that separately.
+    else if (!list.includes('online')) options.push({ mode: 'online', payNow: round2(due + fee), payAtSpa: 0, fee });
   }
-  // "Required" means every booking secures something online. Without online payments we never block bookings.
-  if (venueAllowed && (policy !== 'required' || !onlineOk)) options.push({ mode: 'pay_at_venue', payNow: 0, payAtSpa: due, fee: 0 });
-  return { fee, policy, deposit, options };
+  // The platform default never blocks bookings while online payments are off; an admin's explicit
+  // per-spa choice is respected as set.
+  if (list.includes('venue') || (!onlineOk && !custom && spa.allow_pay_at_venue !== 0)) options.push({ mode: 'pay_at_venue', payNow: 0, payAtSpa: due, fee: 0 });
+  return { fee, policy, deposit, options, custom };
 }
 
 // What the customer pays online for a booking (full price or the advance, plus any booking fee).
@@ -80,4 +100,4 @@ function balanceDue(b) {
   return round2(b.amount - (b.giftcard_amount || 0) - (b.deposit_status === 'paid' ? b.deposit_amount : 0));
 }
 
-module.exports = { getSettings, saveSettings, policyFor, depositFor, paymentOptions, onlineCharge, balanceDue, POLICIES };
+module.exports = { getSettings, saveSettings, policyFor, depositFor, paymentOptions, onlineCharge, balanceDue, POLICIES, OPTION_KEYS, parseOptions, effectiveOptions, feeFor };
