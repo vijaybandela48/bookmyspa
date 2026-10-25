@@ -576,6 +576,7 @@ try {
     // Booking-time modes and per-spa payment options (additive; defaults keep today's behaviour)
     ['spas', 'slot_mode', "TEXT NOT NULL DEFAULT 'auto'"], ['spas', 'slot_times', 'TEXT'], ['spas', 'slot_step', 'INTEGER NOT NULL DEFAULT 15'],
     ['spas', 'payment_options', 'TEXT'], ['spas', 'booking_fee', 'REAL'],
+    ['bookings', 'special_request', 'TEXT'], // optional note from the customer to the spa
   ]) if (!has(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
   db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 } catch (e) { console.error('Migration error:', e.message); }

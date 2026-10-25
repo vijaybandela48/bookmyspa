@@ -881,6 +881,7 @@ async function loadOwnerBookings() {
               <div class="sub">${b.customer_name} · ${b.customer_phone || 'no phone'} · ${b.spa_name}</div>
               ${b.booking_ref ? `<div class="mono" style="font-size:12.5px;color:var(--plum);margin-top:3px">Booking ID: ${esc(b.booking_ref)}</div>` : ''}
               ${b.therapist_name ? `<div class="helper-text" style="margin:2px 0 0">Therapist: ${esc(b.therapist_name)}</div>` : ''}
+              ${b.special_request ? `<div class="special-req"><strong>📝 Customer’s request:</strong> ${esc(b.special_request)}</div>` : ''}
               ${b.payment_status === 'paid' ? `<a href="/partner/invoice.html?booking=${b.id}" style="font-size:12.5px;color:var(--moss);font-weight:600">🧾 Invoice</a>` : ''}
             </div>
             <div class="amount">${money(b.amount)}${b.coupon_code ? `<div style="font-size:11px;color:var(--gold);font-weight:600">🏷️ ${b.coupon_code} (-${money(b.coupon_discount)})</div>` : ''}</div>
@@ -1249,7 +1250,7 @@ async function loadCalendar() {
             const style = `top:${top}px;height:${h}px;left:calc(${(it._lane / lanes) * 100}% + 3px);width:calc(${100 / lanes}% - 6px)`;
             return it._kind === 'block'
               ? `<div class="cal-item block" style="${style}" title="${esc(it.reason || 'Blocked')}"><span>${formatTime(it.start_time)}–${formatTime(it.end_time)} · ${it.qty} room${it.qty !== 1 ? 's' : ''}</span><strong>${esc(it.reason || 'Blocked')}</strong><button class="cal-x" onclick="removeBlock(${it.id})" aria-label="Remove block">×</button></div>`
-              : `<div class="cal-item ${statusClass(it)}" style="${style}" title="${esc(it.booking_ref || '')}"><span>${formatTime(it.start_time)} · ${esc(it.booking_ref || '')}</span><strong>${esc(it.customer_name)}</strong><em>${esc(it.service_name)}${it.therapist_name ? ' · ' + esc(it.therapist_name) : ''}</em></div>`;
+              : `<div class="cal-item ${statusClass(it)}" style="${style}" title="${esc(it.booking_ref || '')}"><span>${formatTime(it.start_time)} · ${esc(it.booking_ref || '')}</span><strong>${esc(it.customer_name)}</strong><em>${esc(it.service_name)}${it.therapist_name ? ' · ' + esc(it.therapist_name) : ''}</em>${it.special_request ? `<em title="${esc(it.special_request)}">📝 ${esc(it.special_request)}</em>` : ''}</div>`;
           }).join('')}
         </div></div>`;
     }).join('');

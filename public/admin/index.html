@@ -243,7 +243,7 @@ async function loadBookings() {
                 <td ${td} class="mono"><strong>${esc(b.booking_ref || '#' + b.id)}</strong><div class="helper-text" style="margin:0">booked ${formatDate(b.created_at)}</div></td>
                 <td ${td}>${esc(b.customer_name)}<div class="helper-text" style="margin:0">${esc(b.customer_phone || '')}</div></td>
                 <td ${td}>${esc(b.spa_name)}</td>
-                <td ${td}>${esc(b.service_name)}</td>
+                <td ${td}>${esc(b.service_name)}${b.special_request ? `<div class="helper-text" style="margin:2px 0 0;max-width:260px;white-space:pre-line" title="Customer’s special request">📝 ${esc(b.special_request)}</div>` : ''}</td>
                 <td ${td}>${formatDate(b.booking_date)} ${formatTime(b.start_time)}</td>
                 <td ${td} class="mono">${money(b.amount)}${b.booking_fee > 0 ? `<div class="helper-text" style="margin:0">+ ${money(b.booking_fee)} fee</div>` : ''}</td>
                 <td ${td}>${b.payment_mode === 'pay_at_venue' ? (b.deposit_amount > 0 ? '🔒 Advance + spa' : '🏢 At spa') : '💳 Online'} ${b.payment_status === 'paid' ? '✅' : b.payment_status === 'refunded' ? '↩️' : '⏳'}

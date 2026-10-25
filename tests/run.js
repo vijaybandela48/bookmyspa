@@ -519,6 +519,21 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
       ok('back to the platform default', (await modes()) === 'online,deposit,pay_at_venue' && (await j('POST', '/bookings/quote', qb, cu)).d.fee === 0);
     }
 
+    group('Special requests');
+    {
+      const dR2 = ist(29), base = { spaId: 1, serviceId: 2, date: dR2, paymentMode: 'pay_at_venue' };
+      ok('requests over 500 characters refused', (await j('POST', '/bookings', { ...base, startTime: '10:30', specialRequest: 'x'.repeat(501) }, cu)).status === 400);
+      r = await j('POST', '/bookings', { ...base, startTime: '10:30', specialRequest: '  Please focus on shoulders <script>alert(1)</script>\n\n\n\nNo nut oils  ' }, cu);
+      const sb = r.d.booking;
+      ok('request saved with the booking, HTML stripped, blank lines tidied', r.status === 201 && sb.special_request === 'Please focus on shoulders scriptalert(1)/script\n\nNo nut oils', sb && sb.special_request);
+      ok('spa owner sees it in Bookings', (await j('GET', '/owner/bookings', null, own)).d.bookings.find((x) => x.id === sb.id).special_request.startsWith('Please focus'));
+      ok('spa owner sees it on the calendar', (await j('GET', `/owner/spas/1/calendar?date=${dR2}`, null, own)).d.bookings.find((x) => x.id === sb.id).special_request.includes('No nut oils'));
+      ok('customer sees it in My bookings', (await j('GET', '/bookings/me', null, cu)).d.bookings.find((x) => x.id === sb.id).special_request.includes('shoulders'));
+      ok('other owners can’t see it', !(await j('GET', '/owner/bookings', null, own2)).d.bookings.some((x) => x.id === sb.id));
+      r = await j('POST', '/bookings', { ...base, startTime: '12:00' }, cu);
+      ok('the box is optional', r.status === 201 && r.d.booking.special_request === null, r.d);
+    }
+
     group('Backups');
     r = await j('POST', '/admin/backups', {}, adm);
     ok('manual backup works', r.status === 201 && /manual\.db$/.test(r.d.name), r);

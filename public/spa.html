@@ -414,6 +414,9 @@ async function openPayModal() {
         <option value="netbanking">Net Banking</option>
       </select>
     </div>
+    <label for="specialRequest" style="margin-top:16px">Special requests <span style="font-weight:400;color:var(--ink-soft)">(optional)</span></label>
+    <textarea id="specialRequest" rows="3" maxlength="500" placeholder="e.g. Please focus on my shoulders, I’m allergic to nut oils, it’s my first massage" oninput="document.getElementById('srCount').textContent = this.value.length + ' / 500'"></textarea>
+    <p class="helper-text" style="margin:4px 0 0;display:flex;justify-content:space-between;gap:10px"><span>Only the spa sees this.</span><span id="srCount">0 / 500</span></p>
     <p class="helper-text" style="margin-top:14px">📩 Your confirmation will be sent by <strong>SMS and WhatsApp</strong> to ${esc(user.phone || 'your mobile number')}.</p>
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn outline block" onclick="closePayModal()">Cancel</button>
@@ -542,6 +545,8 @@ async function confirmBooking() {
     const opt = currentOption();
     if (!opt) throw new Error('Please choose how you’d like to pay.');
     const bookingBody = { spaId: Number(spaId), serviceId: selectedServiceId, date: selectedDate, startTime: selectedSlot, paymentMode: opt.mode === 'prepaid' ? 'online' : opt.mode, expectedPayNow: opt.payNow, notifyChannel };
+    const sr = document.getElementById('specialRequest').value.trim();
+    if (sr) bookingBody.specialRequest = sr;
     if (appliedCoupon && appliedCoupon.valid) bookingBody.couponCode = appliedCoupon.code;
     if (tChoice.therapistId) bookingBody.therapistId = tChoice.therapistId; else if (tChoice.gender) bookingBody.gender = tChoice.gender;
     if (appliedGift) bookingBody.giftCardCode = appliedGift.code;

@@ -1113,6 +1113,9 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       const body = await parseBody(req);
       const { spaId, serviceId, date, startTime, couponCode } = body;
+      // Optional note for the spa ("focus on shoulders", "allergic to nut oils"). Text only; HTML is stripped by parseBody.
+      const specialRequest = String(body.specialRequest ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+      if (specialRequest.length > 500) return sendJSON(res, 400, { error: 'Please keep your special request under 500 characters.' });
       const topts = therapistOpts(body);
 
       const dateErr = validateBookingDate(date);
@@ -1164,11 +1167,11 @@ async function handleApi(req, res, pathname, query) {
 
       const info = db.prepare(
         `INSERT INTO bookings (customer_id, spa_id, service_id, booking_date, start_time, end_time, amount, coupon_code, coupon_discount, status, payment_status, payment_mode,
-                               therapist_id, therapist_choice, giftcard_amount, gift_card_id, customer_package_id, deposit_amount, deposit_status, booking_fee)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+                               therapist_id, therapist_choice, giftcard_amount, gift_card_id, customer_package_id, deposit_amount, deposit_status, booking_fee, special_request)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).run(user.id, spa.id, service.id, date, chosen.start_time, chosen.end_time, finalAmount, appliedCode, couponDiscount, status, prepaid ? 'paid' : 'unpaid', paymentMode,
             therapist ? therapist.id : null, therapist ? (topts.therapistId ? 'specific' : topts.gender || 'any') : null, giftAmount, gift ? gift.card.id : null, pkg ? pkg.id : null,
-            depositAmount, depositAmount > 0 ? 'pending' : null, bookingFee);
+            depositAmount, depositAmount > 0 ? 'pending' : null, bookingFee, specialRequest || null);
       const bookingId = Number(info.lastInsertRowid);
       applyCommission(bookingId, spa, finalAmount);
       assignBookingRef(bookingId);
@@ -2006,7 +2009,7 @@ async function handleApi(req, res, pathname, query) {
       const date = query.get('date') || localNow().date;
       if (!isValidDate(date)) return sendJSON(res, 400, { error: 'Invalid date.' });
       const bookings = db.prepare(
-        `SELECT b.id, b.booking_ref, b.start_time, b.end_time, b.status, b.payment_mode, b.payment_status, b.amount,
+        `SELECT b.id, b.booking_ref, b.start_time, b.end_time, b.status, b.payment_mode, b.payment_status, b.amount, b.special_request,
                 sv.name AS service_name, sv.room_type_id, u.name AS customer_name, u.phone AS customer_phone, (SELECT name FROM therapists WHERE id = b.therapist_id) AS therapist_name
          FROM bookings b JOIN services sv ON sv.id = b.service_id JOIN users u ON u.id = b.customer_id
          WHERE b.spa_id = ? AND b.booking_date = ? AND b.status IN ('pending_payment','confirmed','completed') ORDER BY b.start_time`).all(spa.id, date);
