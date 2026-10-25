@@ -737,3 +737,30 @@ input:focus, select:focus, textarea:focus { border-color: var(--moss); box-shado
 /* Customer's special request on a booking */
 .special-req { margin-top: 6px; padding: 8px 10px; border-radius: 10px; background: var(--stone-dark); font-size: 13.5px; line-height: 1.45; white-space: pre-line; max-width: 520px; overflow-wrap: anywhere; }
 .special-req strong { color: var(--moss-deep); font-weight: 700; }
+
+/* ---------- Clock dial (customer picks a time) ---------- */
+.clock-pick { display: grid; justify-items: center; gap: 12px; margin: 4px 0 16px; }
+.dial-head { display: flex; align-items: center; gap: 10px; color: var(--moss); width: 100%; justify-content: center; flex-wrap: wrap; }
+.dial-readout { font-family: 'Marcellus', Georgia, serif; font-size: 34px; line-height: 1; color: var(--moss-deep); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.dial-readout .dim { color: var(--line); }
+.dial-ph { font-family: 'Figtree', sans-serif; font-size: 20px; font-weight: 600; color: var(--ink-soft); letter-spacing: 0; }
+.seg { display: inline-flex; padding: 4px; border-radius: 999px; background: var(--stone-dark); gap: 4px; max-width: 100%; }
+.seg button { border: 0; background: transparent; border-radius: 999px; padding: 8px 14px; font: 600 12.5px var(--font-body, 'Figtree', sans-serif); color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
+.seg button.on { background: var(--white); color: var(--moss-deep); box-shadow: 0 2px 8px -3px rgba(31,27,36,.35); }
+.dial { position: relative; width: 264px; height: 264px; max-width: 100%; flex: none; }
+.dial-face { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle at 50% 40%, var(--white), var(--stone) 75%); border: 1px solid var(--line); box-shadow: inset 0 2px 10px rgba(31,27,36,.06), 0 18px 40px -26px rgba(31,27,36,.45); }
+.dial-face::before { content: ''; position: absolute; inset: 5px; border-radius: 50%;
+  background: repeating-conic-gradient(from -0.6deg, var(--line) 0 1.2deg, transparent 1.2deg 30deg);
+  -webkit-mask: radial-gradient(circle, transparent 117px, #000 118px); mask: radial-gradient(circle, transparent 117px, #000 118px); }
+.dial.minute .dial-face { background: radial-gradient(circle at 50% 40%, var(--white), var(--stone-dark) 80%); }
+.dial-pin { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--moss); }
+.dial-hand { position: absolute; left: calc(50% - 1.5px); bottom: 50%; width: 3px; height: 82px; background: var(--moss); border-radius: 3px; transform-origin: 50% 100%; transition: transform .35s cubic-bezier(.2,.8,.2,1); }
+.dial-btn { position: absolute; width: 44px; height: 44px; border-radius: 50%; border: 0; background: transparent; color: var(--moss-deep); font: 600 15px var(--font-body, 'Figtree', sans-serif); cursor: pointer; transition: background .2s, color .2s, transform .2s; font-variant-numeric: tabular-nums; }
+.dial.minute .dial-btn { font-size: 13px; }
+.dial-btn:hover:not(:disabled) { background: var(--stone-dark); transform: scale(1.06); }
+.dial-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.dial-btn.on { background: var(--moss); color: var(--white); box-shadow: 0 6px 16px -6px rgba(47,93,80,.7); }
+.dial-btn:disabled { color: #C9BFAE; cursor: not-allowed; text-decoration: line-through; text-decoration-thickness: 1px; }
+.dial-btn.closed:disabled { color: #D8D1C4; text-decoration: none; font-weight: 500; }
+.dial-hint { margin: 0; font-size: 13px; color: var(--ink-soft); }
+@media (prefers-reduced-motion: reduce) { .dial-hand, .dial-btn { transition: none; } }

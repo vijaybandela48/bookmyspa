@@ -262,7 +262,7 @@ function renderServices() {
 function selectService(id) {
   selectedServiceId = id;
   tChoice = { therapistId: null, gender: null };
-  selectedSlot = null;
+  selectedSlot = null; resetClock();
   renderServices();
   renderBookingPanel();
 }
@@ -294,7 +294,7 @@ function renderBookingPanel() {
     <button class="btn gold block" id="bookBtn" disabled onclick="openPayModal()">Select a time slot</button>
   `;
   document.getElementById('dateSelect').addEventListener('change', (e) => {
-    selectedDate = e.target.value; selectedSlot = null; loadSlots();
+    selectedDate = e.target.value; selectedSlot = null; resetClock(); loadSlots();
   });
   loadSlots();
 }
@@ -325,41 +325,76 @@ async function loadSlots() {
   }
 }
 
-// "Customer picks a time" spas: a clock input plus free times grouped by part of the day.
+// "Customer picks a time" spas: an analog clock dial. Tap an hour, then a minute.
+// Busy times are greyed out, so customers never face a wall of buttons.
 let lastSlots = [];
-function renderClock(grid, slots) {
-  const free = slots.filter(s => s.available);
-  const step = spaData.slot_step || 15;
-  const groups = [['Morning', 0, 720], ['Afternoon', 720, 1020], ['Evening', 1020, 1440]]
-    .map(([name, a, b]) => [name, free.filter(s => { const m = toMinutes(s.start_time); return m >= a && m < b; })]).filter(([, l]) => l.length);
-  grid.className = 'clock-pick';
-  grid.innerHTML = `
-    <div class="clock-row">
-      <label for="clockInput" class="sr-only">Start time</label>
-      <input type="time" id="clockInput" step="${step * 60}" min="${slots[0].start_time}" max="${slots[slots.length - 1].start_time}" value="${selectedSlot || ''}" onchange="clockPicked(this.value)">
-      <span class="helper-text" style="margin:0">Any time, every ${step} min</span>
-    </div>
-    <p class="helper-text" id="clockMsg" style="margin:6px 0 0"></p>
-    ${groups.map(([name, list]) => `<div class="clock-group"><div class="clock-label">${name}</div><div class="slot-grid">${list.map(s => `<div class="slot available ${selectedSlot === s.start_time ? 'selected' : ''}" onclick="pickSlot('${s.start_time}')">${formatTime(s.start_time)}</div>`).join('')}</div></div>`).join('')}`;
-  if (selectedSlot) clockPicked(selectedSlot, true);
-}
+let clock = { stage: 'hour', half: null, hour: null };
+function resetClock() { clock = { stage: 'hour', half: null, hour: null }; }
 function toMinutes(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
-function clockPicked(value, quiet) {
-  const msg = document.getElementById('clockMsg'), btn = document.getElementById('bookBtn');
-  if (!value) return;
-  const slot = lastSlots.find(s => s.start_time === value);
-  if (slot && slot.available) {
-    if (!quiet) return pickSlot(value);
-    msg.textContent = `✓ ${formatTime(value)} is free.`; msg.style.color = 'var(--moss)';
-    return;
+const hourOf = (t) => Number(t.slice(0, 2));
+const h12 = (h) => (h % 12) || 12;
+function renderClock(grid, slots) {
+  grid.className = 'clock-pick';
+  const free = slots.filter(s => s.available);
+  const hoursAll = [...new Set(slots.map(s => hourOf(s.start_time)))];
+  const hoursFree = new Set(free.map(s => hourOf(s.start_time)));
+  const halves = ['am', 'pm'].filter(h => hoursAll.some(x => (x < 12) === (h === 'am')));
+  if (selectedSlot && clock.hour === null) { clock.hour = hourOf(selectedSlot); clock.stage = 'minute'; }
+  if (!clock.half || !halves.includes(clock.half)) {
+    const ref = clock.hour !== null ? clock.hour : free.length ? hourOf(free[0].start_time) : hoursAll[0];
+    clock.half = ref >= 12 && halves.includes('pm') ? 'pm' : halves[0];
   }
-  selectedSlot = null; btn.disabled = true; btn.textContent = 'Select a time slot';
-  const near = lastSlots.filter(s => s.available).sort((a, b) => Math.abs(toMinutes(a.start_time) - toMinutes(value)) - Math.abs(toMinutes(b.start_time) - toMinutes(value))).slice(0, 3);
-  const step = spaData.slot_step || 15;
-  msg.style.color = 'var(--plum)';
-  msg.innerHTML = (!slot && toMinutes(value) % step ? `Please choose a time on a ${step}-minute mark. ` : `${formatTime(value)} isn’t available. `)
-    + (near.length ? `Nearest free: ${near.map(s => `<button type="button" class="link-btn" onclick="pickSlot('${s.start_time}')">${formatTime(s.start_time)}</button>`).join(', ')}` : '');
+  const R = 104, C = 132;
+  const pos = (deg) => `left:${C + R * Math.sin(deg * Math.PI / 180) - 22}px;top:${C - R * Math.cos(deg * Math.PI / 180) - 22}px`;
+  let items, handDeg = null, hint;
+  if (clock.stage === 'hour') {
+    // All twelve numerals, like a real clock face; hours the spa is shut are shown faintly.
+    items = Array.from({ length: 12 }, (_, i) => clock.half === 'am' ? i : i + 12).map(h => {
+      const open = hoursAll.includes(h);
+      return { deg: (h % 12) * 30, label: h12(h), on: clock.hour === h, off: !hoursFree.has(h), closed: !open,
+        aria: `${h12(h)} ${h < 12 ? 'AM' : 'PM'}${!open ? ', closed' : hoursFree.has(h) ? '' : ', fully booked'}`, act: `chooseHour(${h})` };
+    });
+    if (clock.hour !== null && (clock.hour < 12) === (clock.half === 'am')) handDeg = (clock.hour % 12) * 30;
+    hint = 'Tap an hour';
+  } else {
+    const step = spaData.slot_step || 15, inHour = slots.filter(s => hourOf(s.start_time) === clock.hour);
+    items = Array.from({ length: Math.max(1, Math.floor(60 / step)) }, (_, i) => i * step).map(m => {
+      const mm = String(m).padStart(2, '0'), s = inHour.find(x => x.start_time.endsWith(':' + mm));
+      if (!s) return { deg: m * 6, label: ':' + mm, off: true, closed: true, aria: `:${mm}, not available` };
+      return { deg: m * 6, label: ':' + mm, on: selectedSlot === s.start_time, off: !s.available,
+        aria: `${formatTime(s.start_time)}${s.available ? '' : ', booked'}`, act: `pickSlot('${s.start_time}')` };
+    });
+    const sel = items.find(x => x.on); if (sel) handDeg = sel.deg;
+    hint = selectedSlot ? 'Free — you can book this time' : 'Now tap the minutes';
+  }
+  const readout = selectedSlot ? formatTime(selectedSlot)
+    : clock.hour !== null ? `${h12(clock.hour)}:<span class="dim">00</span> ${clock.hour < 12 ? 'AM' : 'PM'}` : '<span class="dial-ph">Choose a time</span>';
+  grid.innerHTML = `
+    <div class="dial-head">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <div class="dial-readout" aria-live="polite">${readout}</div>
+      ${clock.stage === 'minute' ? '<button type="button" class="link-btn" onclick="backToHours()">Change hour</button>' : ''}
+    </div>
+    ${clock.stage === 'hour' && halves.length > 1 ? `<div class="seg" role="group" aria-label="Morning or afternoon">
+      ${halves.map(h => `<button type="button" class="${clock.half === h ? 'on' : ''}" aria-pressed="${clock.half === h}" onclick="setHalf('${h}')">${h === 'am' ? 'AM · Morning' : 'PM · Afternoon & evening'}</button>`).join('')}</div>` : ''}
+    <div class="dial ${clock.stage}">
+      <div class="dial-face"></div>
+      ${handDeg !== null ? `<div class="dial-hand" style="transform:rotate(${handDeg}deg)"></div>` : ''}
+      <div class="dial-pin"></div>
+      ${items.map(x => `<button type="button" class="dial-btn ${x.on ? 'on' : ''} ${x.closed ? 'closed' : ''}" style="${pos(x.deg)}" ${x.off ? 'disabled' : `onclick="${x.act}"`} aria-label="${x.aria}">${x.label}</button>`).join('')}
+    </div>
+    <p class="dial-hint">${hint}</p>`;
 }
+function chooseHour(h) {
+  const inHour = lastSlots.filter(s => hourOf(s.start_time) === h && s.available);
+  clock.hour = h;
+  if (selectedSlot && hourOf(selectedSlot) !== h) { selectedSlot = null; const b = document.getElementById('bookBtn'); b.disabled = true; b.textContent = 'Select a time slot'; }
+  if (lastSlots.filter(s => hourOf(s.start_time) === h).length === 1 && inHour.length === 1) { clock.stage = 'minute'; return pickSlot(inHour[0].start_time); }
+  clock.stage = 'minute';
+  renderClock(document.getElementById('slotGrid'), lastSlots);
+}
+function backToHours() { clock.stage = 'hour'; renderClock(document.getElementById('slotGrid'), lastSlots); }
+function setHalf(h) { clock.half = h; renderClock(document.getElementById('slotGrid'), lastSlots); }
 
 function pickSlot(start) {
   selectedSlot = start;
@@ -502,7 +537,7 @@ function therapistChooser(service) {
     ${list.map(t => chip(esc(t.name), tChoice.therapistId === t.id, `setTherapist(${t.id}, null)`, t.bio || '')).join('')}
   </div>`;
 }
-function setTherapist(id, gender) { tChoice = { therapistId: id, gender }; selectedSlot = null; renderBookingPanel(); }
+function setTherapist(id, gender) { tChoice = { therapistId: id, gender }; selectedSlot = null; resetClock(); renderBookingPanel(); }
 
 function renderPackages() {
   const el = document.getElementById('packagesWrap');
