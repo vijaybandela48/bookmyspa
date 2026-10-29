@@ -44,6 +44,7 @@
       <button class="btn gold block" style="margin-top:20px" type="submit" id="otpLoginBtn" disabled>Log in with OTP</button>
     </form>
     <hr class="divider-line"><p style="font-size:13.5px;color:var(--ink-soft)">New to BookMySpa? <a href="/register.html" style="color:var(--moss);font-weight:700">Create an account</a></p>
+    <p style="font-size:13.5px;color:var(--ink-soft);margin-top:6px">Booked as a guest? <a href="/find-booking.html" style="color:var(--moss);font-weight:700">Find your booking</a> · Just booking once? Pick a spa and choose <strong>Continue as guest</strong> at checkout.</p>
   </div>
 </div>
 
@@ -65,7 +66,7 @@ function showOtpStatus(el, result) {
   el.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
 }
 
-if (API.isLoggedIn() && API.user().role === PORTAL_ROLE[PORTAL]) location.href = safeNext('/');
+if (API.isLoggedIn() && API.user().role === PORTAL_ROLE[PORTAL] && !API.isGuest()) location.href = safeNext('/');
 document.getElementById('pwForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email').value.trim();

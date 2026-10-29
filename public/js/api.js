@@ -25,6 +25,7 @@ const API = {
   token() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
   user() { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } },
   isLoggedIn() { return !!this.token() && !!this.user(); },
+  isGuest() { const u = this.user(); return !!(u && u.is_guest); },
   saveSession(token, user) { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(USER_KEY, JSON.stringify(user)); },
   clearSession() { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); },
   logout() { this.clearSession(); window.location.href = PORTAL_HOME[PORTAL]; },
@@ -54,9 +55,10 @@ const API = {
     try { data = await res.json(); } catch { /* empty body */ }
     if (res.status === 401 && t) {
       // Session expired or invalid — sign out cleanly instead of leaving a broken page.
+      const wasGuest = this.isGuest();
       this.clearSession();
-      toast('Your session has expired. Please log in again.', 'error');
-      setTimeout(() => { window.location.href = PORTAL_LOGIN[PORTAL]; }, 1200);
+      toast(wasGuest ? 'Your guest session has ended. Find your booking again with its booking ID.' : 'Your session has expired. Please log in again.', 'error');
+      setTimeout(() => { window.location.href = wasGuest ? '/find-booking.html' : PORTAL_LOGIN[PORTAL]; }, 1200);
     }
     if (!res.ok) {
       const err = new Error(data.error || (res.status >= 500 ? 'Something went wrong on our side. Please try again.' : 'Request failed.'));
@@ -125,9 +127,11 @@ function renderNav(active) {
   const tag = PORTAL === 'partner' ? '<span class="portal-tag">Partner</span>' : PORTAL === 'admin' ? '<span class="portal-tag">Admin</span>' : '';
   let right = '';
   if (PORTAL === 'customer') {
-    right = user
+    right = user && user.is_guest
+      ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><span class="nav-user">Hi, ${first} <span class="guest-pill">Guest</span></span><a href="/register.html?from=guest&next=/account.html" class="nav-btn">Sign up</a><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
+      : user
       ? `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/account.html" class="nav-link ${active === 'account' ? 'active' : ''}">My bookings</a><a href="/wallet.html" class="nav-link ${active === 'wallet' ? 'active' : ''}">Wallet</a><a href="/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
-      : `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
+      : `<a href="/" class="nav-link ${active === 'home' ? 'active' : ''}">Home</a><a href="/find-booking.html" class="nav-link ${active === 'find' ? 'active' : ''}">Find booking</a><a href="/login.html" class="nav-link">Log in</a><a href="/register.html" class="nav-btn">Sign up</a>`;
   } else if (PORTAL === 'partner') {
     right = user
       ? `<a href="/partner/dashboard.html" class="nav-link ${active === 'dashboard' ? 'active' : ''}">Dashboard</a><a href="/partner/insights.html" class="nav-link ${active === 'insights' ? 'active' : ''}">✨ Insights</a><a href="/partner/profile.html" class="nav-link ${active === 'profile' ? 'active' : ''}">Profile</a><span class="nav-user">Hi, ${first}</span><button class="nav-link as-link" onclick="API.logout()">Log out</button>`
@@ -154,7 +158,7 @@ async function renderFooter() {
         <div class="brand" style="color:var(--white)">${BRAND_MARK} <span>BookMy<span class="brand-accent">Spa</span></span></div>
         <p>${PORTAL === 'partner' ? 'Fill your empty slots, cut no-shows, and manage every booking in one place.' : 'Book massage and spa appointments online — browse nearby spas, compare prices, and pay securely.'}</p>
       </div>
-      <div class="footer-col"><h5>Company</h5><a href="/about.html">About us</a><a href="/contact.html">Contact us</a></div>
+      <div class="footer-col"><h5>Company</h5><a href="/about.html">About us</a><a href="/contact.html">Contact us</a>${PORTAL === 'customer' ? '<a href="/find-booking.html">Find my booking</a>' : ''}</div>
       <div class="footer-col"><h5>Legal</h5><a href="/privacy.html">Privacy policy</a><a href="/terms.html">Terms of service</a></div>
       <div class="footer-col">${businessCol}</div>
     </div>

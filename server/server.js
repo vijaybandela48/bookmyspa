@@ -110,7 +110,7 @@ const server = http.createServer((req, res) => {
   // the partner portal and admin.yourdomain.com the admin console at their
   // root. Shared assets (css, js, icons, uploads, legal pages) are served as-is.
   const host = String(req.headers.host || '').toLowerCase();
-  const SHARED = /^\/(css|js|icons|uploads)\/|^\/(manifest\.json|sw\.js|favicon\.ico|about\.html|contact\.html|privacy\.html|terms\.html)$/;
+  const SHARED = /^\/(css|js|icons|uploads)\/|^\/(manifest\.json|sw\.js|favicon\.ico|find-booking\.html|about\.html|contact\.html|privacy\.html|terms\.html)$/;
   for (const [sub, dir] of [['partner.', '/partner'], ['admin.', '/admin']]) {
     if (host.startsWith(sub) && !pathname.startsWith(dir) && !SHARED.test(pathname)) {
       pathname = dir + (pathname === '/' ? '/' : pathname);

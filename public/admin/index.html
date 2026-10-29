@@ -311,7 +311,7 @@ async function loadCustomers() {
     const list = users.filter(u => matches(u, q));
     el.innerHTML = `<p class="helper-text">${users.length} customer${users.length !== 1 ? 's' : ''}${q ? ` · ${list.length} matching` : ''}</p>` + userTable(list, [
       ['ID', u => `<span class="mono helper-text">#${u.id}</span>`],
-      ['Name', u => esc(u.name) + (u.active === 0 ? ' <span class="badge cancelled">Deactivated</span>' : '')],
+      ['Name', u => esc(u.name) + (u.is_guest ? ' <span class="badge pending">Guest</span>' : '') + (u.active === 0 ? ' <span class="badge cancelled">Deactivated</span>' : '')],
       ['Contact', u => `${esc(u.email)}<div class="helper-text" style="margin:0">${esc(u.phone || '—')} ${u.phone_verified ? '✅' : ''}</div>`],
       ['Bookings', u => u.booking_count],
       ['Total spent', u => `<span class="mono">${money(u.total_spent)}</span>`],

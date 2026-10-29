@@ -80,7 +80,7 @@ async function buyGiftCard() {
   finally { btn.disabled = false; }
 }
 document.getElementById('gcCustom').addEventListener('input', amountChips);
-if (API.requireRole()) { amountChips(); load(); }
+if (API.isGuest()) { location.replace('/account.html'); } else if (API.requireRole()) { amountChips(); load(); }
 </script>
 </body>
 </html>

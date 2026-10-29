@@ -35,6 +35,8 @@ function composeMessage({ customerName, spaName, serviceName, date, startTime, a
     `\nSee you there! — BookMySpa`;
 }
 
+// Guests have an internal placeholder login email; mail goes to the address they typed, if any.
+function emailOf(c) { return c.email && !/@guest\.bookmyspa\.invalid$/i.test(c.email) ? c.email : (c.contact_email || null); }
 async function sendEmail(to, subject, body) {
   if (!process.env.RESEND_API_KEY) {
     return { status: 'mocked', detail: `[MOCK EMAIL] To: ${to} | Subject: ${subject} | ${body.slice(0, 60)}...` };
@@ -115,7 +117,7 @@ async function sendBookingConfirmation({ channel, booking, customer, spa, servic
   let recipient;
 
   if (channel === 'email') {
-    recipient = customer.email;
+    recipient = emailOf(customer);
     result = await sendEmail(recipient, `Booking confirmed — ${spa.name}`, message);
   } else if (channel === 'sms') {
     recipient = customer.phone;
@@ -216,7 +218,7 @@ async function sendReminder({ booking, customer, spa, service }) {
 // Sends the booking confirmation on EVERY channel: SMS + WhatsApp always, email too if configured.
 async function sendBookingConfirmations(ctx) {
   const channels = ['sms', 'whatsapp'];
-  if (process.env.RESEND_API_KEY && ctx.customer.email) channels.push('email');
+  if (process.env.RESEND_API_KEY && emailOf(ctx.customer)) channels.push('email');
   const results = {};
   for (const ch of channels) {
     try { results[ch] = await sendBookingConfirmation({ channel: ch, ...ctx }); }

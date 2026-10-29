@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Find my booking · BookMySpa</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1F1B24">
+<link rel="icon" href="/icons/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+</head>
+<body>
+<div id="sb-nav"></div>
+
+<div class="wrap auth-wrap">
+  <div class="panel find-panel">
+    <div class="find-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/><circle cx="15.5" cy="15" r="2.2"/><path d="M17.2 16.7l1.8 1.8"/></svg></div>
+    <h2>Find my booking</h2>
+    <p class="helper-text" style="margin-bottom:14px">Booked as a guest? Enter your booking ID and the mobile number you used. You can view, reschedule or cancel it, download your receipt and leave a review.</p>
+    <form id="findForm" novalidate>
+      <label for="fRef">Booking ID</label>
+      <input id="fRef" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="BMS-261029-AB7K" class="mono">
+      <label for="fPhone">Mobile number</label>
+      <div class="ct-phone"><span>+91</span><input id="fPhone" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" placeholder="10-digit mobile"></div>
+      <div id="fOtpBox" hidden>
+        <label for="fOtp">6-digit code sent to your mobile</label>
+        <input id="fOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••">
+        <p class="helper-text" id="fOtpStatus" style="margin:4px 0 0"></p>
+      </div>
+      <p class="ct-msg" id="fMsg" role="alert"></p>
+      <button class="btn gold block" style="margin-top:16px" type="submit" id="fBtn">Find booking</button>
+    </form>
+    <hr class="divider-line">
+    <p style="font-size:13.5px;color:var(--ink-soft)">Your booking ID is in your SMS and WhatsApp confirmation, and starts with <span class="mono">BMS-</span>. Have an account? <a href="/login.html" style="color:var(--moss);font-weight:700">Log in</a></p>
+  </div>
+</div>
+
+<div id="sb-footer"></div>
+<script src="/js/api.js"></script>
+<script>
+renderNav('find');
+renderFooter();
+let otpOn = false, otpSentTo = null;
+getConfig().then(c => { otpOn = !!c.otp; });
+const ref = document.getElementById('fRef'), phone = document.getElementById('fPhone');
+const pre = new URLSearchParams(location.search).get('ref'); if (pre) ref.value = pre;
+ref.addEventListener('input', () => { ref.value = ref.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''); });
+phone.addEventListener('input', () => {
+  phone.value = phone.value.replace(/\D/g, '').slice(0, 10);
+  if (otpSentTo && otpSentTo !== phone.value) { otpSentTo = null; document.getElementById('fOtpBox').hidden = true; document.getElementById('fBtn').textContent = 'Find booking'; }
+});
+document.getElementById('findForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('fMsg'), btn = document.getElementById('fBtn');
+  msg.textContent = '';
+  if (!/^BMS-\d{6}-[A-Z0-9]{4}$/.test(ref.value.trim())) { msg.textContent = 'Booking IDs look like BMS-261029-AB7K.'; return ref.focus(); }
+  if (!/^[6-9]\d{9}$/.test(phone.value)) { msg.textContent = 'Enter your 10-digit mobile number.'; return phone.focus(); }
+  btn.disabled = true;
+  try {
+    if (otpOn && otpSentTo !== phone.value) {
+      btn.textContent = 'Sending code…';
+      const r = await API.post('/auth/otp/send', { phone: phone.value, purpose: 'guest' });
+      otpSentTo = phone.value;
+      document.getElementById('fOtpBox').hidden = false;
+      document.getElementById('fOtpStatus').textContent = r.devCode ? `Development mode — your code is ${r.devCode}` : 'Code sent by SMS. It expires in 5 minutes.';
+      document.getElementById('fOtp').focus();
+      btn.textContent = 'Verify & open booking';
+      return;
+    }
+    btn.textContent = 'Looking…';
+    const r = await API.post('/bookings/find', { ref: ref.value.trim(), phone: phone.value, otpCode: document.getElementById('fOtp').value.trim() });
+    API.saveSession(r.token, r.user);
+    btn.textContent = 'Found it ✓';
+    setTimeout(() => { location.href = '/account.html'; }, 350);
+  } catch (err) {
+    msg.innerHTML = esc(err.message) + (err.data && err.data.code === 'has_account' ? ' <a href="/login.html?next=/account.html">Log in</a>' : '');
+    btn.textContent = otpOn && otpSentTo ? 'Verify & open booking' : 'Find booking';
+  } finally { btn.disabled = false; }
+});
+</script>
+</body>
+</html>

@@ -437,7 +437,10 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
       r = await j('POST', '/bookings', { ...qb(ist(25), '10:30'), paymentMode: 'deposit' }, cu);
       const lb = r.d.booking; co = await j('POST', `/bookings/${lb.id}/checkout`, {}, cu);
       dbx("UPDATE bookings SET status='cancelled', cancel_reason='payment_timeout', deposit_status='expired' WHERE id=?", lb.id);
-      r = await j('POST', `/bookings/${lb.id}/verify`, { mode: 'mock', orderId: co.d.orderId, paymentId: 'pay_late', signature: 'm' }, cu);
+      for (let k = 0; k < 6; k++) { // the practice gateway randomly declines ~3% of payments
+        r = await j('POST', `/bookings/${lb.id}/verify`, { mode: 'mock', orderId: co.d.orderId, paymentId: 'pay_late' + k, signature: 'm' }, cu);
+        if (/refund/.test(r.d.error || '')) break;
+      }
       row = dbq('SELECT * FROM bookings WHERE id=?', lb.id)[0];
       ok('late payment is refunded, not lost', r.status === 409 && /refund/.test(r.d.error) && row.refund_status === 'refunded', { r: r.d, row });
 
@@ -534,6 +537,43 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
       ok('the box is optional', r.status === 201 && r.d.booking.special_request === null, r.d);
     }
 
+    group('Guest checkout (SMS code on)');
+    {
+      const gPhone = '9' + String(Math.floor(Math.random() * 1e9)).padStart(9, '0');
+      let ipN = 0; // each code request from its own test address, so the per-connection limit isn't the thing under test
+      const otpSend = async (phone, purpose) => (await (await fetch(B + '/auth/otp/send', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `10.9.${Math.floor(++ipN / 250)}.${ipN % 250}` }, body: JSON.stringify({ phone, purpose }) })).json()).devCode;
+      const otp = (phone) => otpSend(phone, 'guest');
+      ok('guest needs a name and a valid mobile', (await j('POST', '/auth/guest', { name: 'A', phone: '123' })).status === 400);
+      ok('wrong code refused', (await j('POST', '/auth/guest', { name: 'Riya Guest', phone: gPhone, otpCode: '000000' })).status === 400);
+      r = await j('POST', '/auth/guest', { name: 'Riya Guest', phone: gPhone, email: 'riya@example.com', otpCode: await otp(gPhone) });
+      const gTok = r.d.token;
+      ok('guest signs in with name + mobile + code', r.status === 201 && r.d.user.is_guest === true && r.d.verified === true && r.d.user.email === 'riya@example.com', r.d);
+      const dG2 = ist(30);
+      r = await j('POST', '/bookings', { spaId: 1, serviceId: 2, date: dG2, startTime: '10:30', paymentMode: 'pay_at_venue', specialRequest: 'First visit' }, gTok);
+      const gb = r.d.booking;
+      ok('guest books a slot', r.status === 201 && gb.status === 'confirmed', r.d);
+      ok('booking remembers the guest session and mobile', (() => { const x = dbq('SELECT guest_session, guest_phone FROM bookings WHERE id=?', gb.id)[0]; return !!x.guest_session && x.guest_phone === gPhone; })());
+      ok('guest sees it in My bookings', (await j('GET', '/bookings/me', null, gTok)).d.bookings.some((x) => x.id === gb.id));
+      ok('guest can’t buy gift cards', (await j('POST', '/giftcards', { amount: 1000 }, gTok)).d.code === 'guest');
+      ok('guest has no editable profile', (await j('PUT', '/me', { name: 'X' }, gTok)).status === 403);
+      ok('spa owner sees the guest booking', (await j('GET', '/owner/bookings', null, own)).d.bookings.some((x) => x.id === gb.id && x.customer_phone === gPhone));
+      const cuPhone = dbq('SELECT phone FROM users WHERE email=?', 'priya.new@example.com')[0].phone;
+      r = await j('POST', '/auth/guest', { name: 'Priya', phone: cuPhone, otpCode: await otp(cuPhone) });
+      ok('a registered number + code signs into the real account', r.status === 200 && r.d.existingAccount === true && r.d.user.is_guest === false, r.d);
+      ok('find booking: wrong mobile refused', (await j('POST', '/bookings/find', { ref: gb.booking_ref, phone: '9000000001', otpCode: '1' })).status === 404);
+      const myRef = (await j('GET', '/bookings/me', null, cu)).d.bookings[0].booking_ref;
+      ok('find booking: account bookings ask you to log in', (await j('POST', '/bookings/find', { ref: myRef, phone: cuPhone })).d.code === 'has_account');
+      r = await j('POST', '/bookings/find', { ref: gb.booking_ref.toLowerCase(), phone: gPhone, otpCode: await otp(gPhone) });
+      ok('find booking: ID + mobile + code opens it', r.status === 200 && r.d.bookingId === gb.id && (await j('GET', '/bookings/me', null, r.d.token)).d.bookings.some((x) => x.id === gb.id), r.d);
+      const regOtp = await otpSend(gPhone, 'registration');
+      ok('registration code can be sent to a guest number', !!regOtp);
+      r = await j('POST', '/auth/register', { name: 'Riya Guest', email: 'riya.saved@example.com', phone: gPhone, password: 'riyapass123', otpCode: regOtp, portal: 'customer' });
+      ok('guest becomes a full account, keeping the booking', r.status === 201 && r.d.converted === true && r.d.user.is_guest === false && (await j('GET', '/bookings/me', null, r.d.token)).d.bookings.some((x) => x.id === gb.id), r.d);
+      ok('old guest session ends after upgrading', (await j('GET', '/bookings/me', null, gTok)).status === 401);
+      const lr = await (await fetch(B + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '10.8.0.1' }, body: JSON.stringify({ email: 'riya.saved@example.com', password: 'riyapass123', portal: 'customer' }) })).json();
+      ok('new account logs in with email + password', !!lr.token && lr.user.is_guest === false, lr);
+    }
+
     group('Backups');
     r = await j('POST', '/admin/backups', {}, adm);
     ok('manual backup works', r.status === 201 && /manual\.db$/.test(r.d.name), r);
@@ -585,6 +625,33 @@ const dow = (iso) => new Date(iso + 'T00:00:00Z').getUTCDay();
         return !seen.filter((x) => x.url === '/v1/orders').pop().body.transfers;
       })());
     } finally { srv2.kill(); fake.close(); }
+
+    // =================== GUESTS WITHOUT SMS (how the live site runs until MSG91 is on) ===================
+    group('Guest checkout (no SMS: production mode)');
+    await sleep(400);
+    const srv3 = spawn(process.execPath, ['server/server.js'], { cwd: TMP, stdio: 'ignore', env: { ...process.env, PORT: String(PORT), NODE_ENV: 'production', TOKEN_SECRET: 'x'.repeat(48), SEED_DEMO_HISTORY: 'off', DATA_DIR: path.join(TMP, 'data'), RAZORPAY_KEY_ID: '', RAZORPAY_KEY_SECRET: '', MSG91_AUTH_KEY: '' } });
+    for (let i = 0; i < 40; i++) { try { if ((await fetch(B + '/config')).ok) break; } catch {} await sleep(250); }
+    try {
+      ok('production mode reports SMS off', (await j('GET', '/config')).d.otp === false);
+      const p = '8' + String(Math.floor(Math.random() * 1e9)).padStart(9, '0');
+      const gA = (await j('POST', '/auth/guest', { name: 'Neha', phone: p })).d;
+      ok('guest continues without a code when SMS is off', !!gA.token && gA.verified === false && gA.user.is_guest === true, gA);
+      const bk = async (tok, date, t) => j('POST', '/bookings', { spaId: 1, serviceId: 2, date, startTime: t, paymentMode: 'pay_at_venue' }, tok);
+      const a1 = (await bk(gA.token, ist(31), '10:30')).d.booking, a2 = (await bk(gA.token, ist(31), '13:30')).d.booking;
+      ok('unverified guest can hold two bookings', !!a1 && !!a2);
+      r = await bk(gA.token, ist(32), '10:30');
+      ok('third booking asks them to make an account', r.status === 429 && r.d.code === 'guest_limit', r.d);
+      const gB = (await j('POST', '/auth/guest', { name: 'Someone else', phone: p })).d;
+      ok('another session with the same number sees none of the earlier bookings', (await j('GET', '/bookings/me', null, gB.token)).d.bookings.length === 0);
+      ok('…and can’t open them by ID', (await j('PUT', `/bookings/${a1.id}/cancel`, {}, gB.token)).status === 404 && (await j('GET', `/bookings/${a1.id}/invoice`, null, gB.token)).status === 404);
+      r = await j('POST', '/bookings/find', { ref: a1.booking_ref, phone: p });
+      ok('find booking with ID + mobile opens that session', r.status === 200 && (await j('GET', '/bookings/me', null, r.d.token)).d.bookings.length === 2, r.d);
+      const b1 = (await bk(gB.token, ist(33), '10:30')).d.booking;
+      r = await j('POST', '/auth/register', { name: 'Someone else', email: `claim${p}@example.com`, phone: p, password: 'claimpass123', portal: 'customer' }, gB.token);
+      const mine = r.status === 201 ? (await j('GET', '/bookings/me', null, r.d.token)).d.bookings.map((x) => x.id) : [];
+      ok('unverified upgrade keeps only this session’s booking', r.d.converted === true && mine.length === 1 && mine[0] === b1.id, { r: r.d, mine });
+      ok('earlier guest bookings stay reachable with Find booking', (await j('POST', '/bookings/find', { ref: a2.booking_ref, phone: p })).status === 200);
+    } finally { srv3.kill(); }
   } catch (e) {
     fail++; console.log('  CRASH in [' + section + ']:', e.stack);
   } finally {

@@ -6,7 +6,7 @@ const os = require('node:os');
 const backupMod = require('./backup');
 const premium = require('./insights');
 const deposits = require('./deposits');
-const { sign, requireAuth, sendJSON } = require('./auth');
+const { sign, requireAuth, sendJSON, getUserFromRequest } = require('./auth');
 const gateway = require('./payments/gateway');
 const notifier = require('./notifications/notifier');
 const { checkRateLimit, checkRateLimitByKey } = require('./rateLimit');
@@ -127,8 +127,27 @@ function saveDataUrlToFile(spaId, dataUrl) {
 }
 
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, phone: u.phone, phone_verified: !!u.phone_verified, role: u.role };
+  return { id: u.id, name: u.name, email: emailOf(u), phone: u.phone, phone_verified: !!u.phone_verified, role: u.role, is_guest: !!u.is_guest };
 }
+
+// ---------------- GUEST CHECKOUT ----------------
+// A guest is a customer row with is_guest = 1. It gets an internal placeholder email (never shown or
+// mailed); the email the guest typed, if any, is kept in contact_email. Guest sessions carry `gs` in
+// their token: a guest who hasn't proven the phone with an SMS code (gv = 0) only ever sees bookings
+// made in that same session, so typing someone's number never reveals their bookings.
+const GUEST_EMAIL_DOMAIN = 'guest.bookmyspa.invalid';
+const isPlaceholderEmail = (e) => String(e || '').toLowerCase().endsWith('@' + GUEST_EMAIL_DOMAIN);
+function emailOf(u) { return isPlaceholderEmail(u.email) ? (u.contact_email || null) : u.email; }
+function guestCanSee(user, b) { return !user.guest || user.gv === 1 || (!!b && !!b.guest_session && b.guest_session === user.gs); }
+function guestToken(u, gs, verified) { return sign({ id: u.id, role: 'customer', name: u.name, guest: true, gs, gv: verified ? 1 : 0 }); }
+function newGuestRow(name, phone, contactEmail, verified) {
+  const { hash, salt } = hashPassword(crypto.randomBytes(24).toString('hex')); // unusable password
+  const email = `guest-${crypto.randomBytes(8).toString('hex')}@${GUEST_EMAIL_DOMAIN}`;
+  const info = db.prepare('INSERT INTO users (name, email, phone, phone_verified, password_hash, password_salt, role, is_guest, contact_email) VALUES (?,?,?,?,?,?,?,1,?)')
+    .run(name, email, phone, verified ? 1 : 0, hash, salt, 'customer', contactEmail || null);
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(Number(info.lastInsertRowid));
+}
+const GUEST_MAX_UPCOMING = 2; // unverified guests: active upcoming bookings per session / per number
 
 function publicSpa(s) {
   const cover = db.prepare("SELECT url FROM spa_media WHERE spa_id = ? AND is_cover = 1 AND type='image' LIMIT 1").get(s.id);
@@ -470,7 +489,8 @@ function bookingInvoice(b) {
   const existing = db.prepare('SELECT * FROM invoices WHERE booking_id = ?').get(b.id);
   if (existing) return { ...JSON.parse(existing.data), invoice_no: existing.invoice_no, issued_at: existing.issued_at };
   const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(b.spa_id), sv = db.prepare('SELECT * FROM services WHERE id = ?').get(b.service_id);
-  const cu = db.prepare('SELECT name, phone, email FROM users WHERE id = ?').get(b.customer_id);
+  const cu0 = db.prepare('SELECT name, phone, email, contact_email FROM users WHERE id = ?').get(b.customer_id);
+  const cu = { name: cu0.name, phone: cu0.phone || b.guest_phone, email: emailOf(cu0) };
   const th = b.therapist_id ? db.prepare('SELECT name FROM therapists WHERE id = ?').get(b.therapist_id) : null;
   const registered = !!(spa.gstin && GSTIN_RE.test(spa.gstin));
   const giftPart = b.giftcard_amount || 0, pkgPart = b.customer_package_id ? b.amount : 0;
@@ -850,7 +870,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'auth' && parts[2] === 'otp' && parts[3] === 'send' && req.method === 'POST') {
       const body = await parseBody(req);
       const phone = normalizePhone(body.phone);
-      const purpose = ['registration', 'login'].includes(body.purpose) ? body.purpose : null;
+      const purpose = ['registration', 'login', 'guest'].includes(body.purpose) ? body.purpose : null;
       if (!phone || phone.length < 10) return sendJSON(res, 400, { error: 'Enter a valid phone number.' });
       if (!purpose) return sendJSON(res, 400, { error: 'Invalid request.' });
       if (!otpAvailable()) return sendJSON(res, 503, { error: 'Phone verification by SMS is not available right now.' });
@@ -863,24 +883,93 @@ async function handleApi(req, res, pathname, query) {
       }
 
       if (purpose === 'registration') {
-        const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
-        if (existing) return sendJSON(res, 409, { error: 'This phone number is already registered. Try logging in instead.' });
+        const existing = db.prepare('SELECT id, is_guest FROM users WHERE phone = ?').get(phone);
+        if (existing && !existing.is_guest) return sendJSON(res, 409, { error: 'This phone number is already registered. Try logging in instead.' });
+      } else if (purpose === 'guest') {
+        const existing = db.prepare('SELECT role FROM users WHERE phone = ?').get(phone);
+        if (existing && existing.role !== 'customer') return sendJSON(res, 409, { error: 'This number belongs to a partner account. Please use a different number.' });
       } else {
         const existing = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
         if (!existing) return sendJSON(res, 404, { error: 'No account found with this phone number.' });
       }
 
-      const code = generateAndStoreOtp(phone, purpose);
+      // A guest code proves the same thing as a login code (this person has this phone), so it's stored as one.
+      const code = generateAndStoreOtp(phone, purpose === 'guest' ? 'login' : purpose);
       const result = await notifier.sendOtpSms(phone, code);
       if (result.status === 'failed') {
         console.error('OTP delivery failed:', result.detail);
-        db.prepare('UPDATE otp_codes SET consumed = 1 WHERE phone = ? AND purpose = ? AND consumed = 0').run(phone, purpose);
+        db.prepare('UPDATE otp_codes SET consumed = 1 WHERE phone = ? AND purpose = ? AND consumed = 0').run(phone, purpose === 'guest' ? 'login' : purpose);
         return sendJSON(res, 502, { error: "We couldn't send the SMS right now. Please try again in a minute." });
       }
 
       const response = { success: true, message: 'Verification code sent.' };
       if (!notifier.isSmsConfigured && !isProduction) response.devCode = code; // local development only
       return sendJSON(res, 200, response);
+    }
+
+    // Continue as a guest: name + mobile (+ optional email). With SMS switched on, the mobile is verified by a code.
+    if (parts[1] === 'auth' && parts[2] === 'guest' && parts.length === 3 && req.method === 'POST') {
+      if (!checkRateLimit(req, { keyPrefix: 'guest', maxRequests: 12, windowMs: 60 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many guest checkouts from this connection. Please try again later.' });
+      }
+      const body = await parseBody(req);
+      const name = String(body.name || '').trim().replace(/\s+/g, ' ');
+      const phone = normalizePhone(body.phone).replace(/^\+?91(?=\d{10}$)/, '');
+      const email = String(body.email || '').trim().toLowerCase();
+      if (name.length < 2 || name.length > 80) return sendJSON(res, 400, { error: 'Please enter your name.' });
+      if (!/^[6-9]\d{9}$/.test(phone)) return sendJSON(res, 400, { error: 'Enter a valid 10-digit mobile number.' });
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJSON(res, 400, { error: 'That email doesn’t look right. Leave it empty if you prefer.' });
+      let verified = false;
+      if (otpAvailable()) {
+        const r = verifyOtp(phone, body.otpCode, 'login');
+        if (!r.valid) return sendJSON(res, 400, { error: r.error, code: 'otp' });
+        verified = true;
+      }
+      const ex = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+      if (ex && ex.role !== 'customer') return sendJSON(res, 409, { error: 'This number belongs to a partner account. Please use a different number.' });
+      if (ex && ex.active === 0) return sendJSON(res, 403, { error: 'This account has been deactivated. Please contact support.' });
+      if (ex && !ex.is_guest) {
+        if (verified) {
+          return sendJSON(res, 200, { token: sign({ id: ex.id, role: ex.role, name: ex.name }), user: publicUser(ex), existingAccount: true,
+            message: `Welcome back, ${ex.name.split(' ')[0]}! You’re signed in to your account.` });
+        }
+        return sendJSON(res, 409, { error: 'This mobile number already has a BookMySpa account. Please log in to book.', code: 'has_account' });
+      }
+      let u = ex;
+      if (u) {
+        db.prepare('UPDATE users SET name = ?, contact_email = COALESCE(?, contact_email), phone_verified = MAX(phone_verified, ?) WHERE id = ?').run(name, email || null, verified ? 1 : 0, u.id);
+        u = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+      } else u = newGuestRow(name, phone, email, verified);
+      const gs = crypto.randomBytes(12).toString('hex');
+      return sendJSON(res, 201, { token: guestToken(u, gs, verified), user: publicUser(u), verified });
+    }
+
+    // Find my booking: booking ID + mobile (+ SMS code when SMS is on) opens that guest booking without a password.
+    if (parts[1] === 'bookings' && parts[2] === 'find' && req.method === 'POST') {
+      if (!checkRateLimit(req, { keyPrefix: 'find_booking', maxRequests: 10, windowMs: 15 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes and try again.' });
+      }
+      const body = await parseBody(req);
+      const ref = String(body.ref || '').trim().toUpperCase().replace(/\s+/g, '');
+      const phone = normalizePhone(body.phone).replace(/^\+?91(?=\d{10}$)/, '');
+      if (!ref || !phone) return sendJSON(res, 400, { error: 'Enter your booking ID and mobile number.' });
+      if (!checkRateLimitByKey('find_booking_ref:' + ref, { maxRequests: 6, windowMs: 60 * 60 * 1000 })) {
+        return sendJSON(res, 429, { error: 'Too many attempts for this booking. Please try again later.' });
+      }
+      const b = db.prepare(`SELECT b.*, u.is_guest, u.phone AS user_phone FROM bookings b JOIN users u ON u.id = b.customer_id WHERE upper(b.booking_ref) = ?`).get(ref);
+      const matches = b && (b.guest_phone === phone || b.user_phone === phone);
+      if (!matches) return sendJSON(res, 404, { error: 'We couldn’t find a booking with that ID and mobile number. Check both and try again.' });
+      if (!b.is_guest) return sendJSON(res, 409, { error: 'This booking belongs to a BookMySpa account. Please log in to manage it.', code: 'has_account' });
+      let verified = false;
+      if (otpAvailable()) {
+        const r = verifyOtp(phone, body.otpCode, 'login');
+        if (!r.valid) return sendJSON(res, 400, { error: r.error, code: 'otp' });
+        verified = true;
+      }
+      const u = db.prepare('SELECT * FROM users WHERE id = ?').get(b.customer_id);
+      let gs = b.guest_session;
+      if (!gs) { gs = crypto.randomBytes(12).toString('hex'); db.prepare('UPDATE bookings SET guest_session = ? WHERE id = ?').run(gs, b.id); }
+      return sendJSON(res, 200, { token: guestToken(u, gs, verified), user: publicUser(u), bookingId: b.id });
     }
 
     if (parts[1] === 'auth' && parts[2] === 'register' && req.method === 'POST') {
@@ -903,10 +992,31 @@ async function handleApi(req, res, pathname, query) {
         if (!otpResult.valid) return sendJSON(res, 400, { error: otpResult.error });
       }
 
+      const existingPhone = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+      const guestRow = existingPhone && existingPhone.is_guest && role === 'customer' ? existingPhone : null;
       const existingEmail = db.prepare('SELECT id FROM users WHERE lower(email) = ?').get(email);
-      if (existingEmail) return sendJSON(res, 409, { error: 'An account with this email already exists.' });
-      const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ?').get(phone);
-      if (existingPhone) return sendJSON(res, 409, { error: 'An account with this phone number already exists.' });
+      if (existingEmail && (!guestRow || existingEmail.id !== guestRow.id)) return sendJSON(res, 409, { error: 'An account with this email already exists.' });
+      if (existingPhone && !guestRow) return sendJSON(res, 409, { error: 'An account with this phone number already exists.' });
+      if (guestRow) {
+        // Turn the guest into a full account, keeping their bookings. If the number wasn't proven by an SMS
+        // code, only the bookings from the guest session making this request come along; any older guest
+        // bookings on this number move to a separate record (still reachable through Find my booking).
+        if (!otpRequired) {
+          const tok = getUserFromRequest(req);
+          const keep = tok && tok.guest && tok.id === guestRow.id ? tok.gs : null;
+          const others = db.prepare('SELECT COUNT(*) c FROM bookings WHERE customer_id = ? AND (guest_session IS NULL OR guest_session IS NOT ?)').get(guestRow.id, keep).c;
+          if (others) {
+            const archived = newGuestRow(guestRow.name, null, guestRow.contact_email, false);
+            db.prepare('UPDATE bookings SET customer_id = ? WHERE customer_id = ? AND (guest_session IS NULL OR guest_session IS NOT ?)').run(archived.id, guestRow.id, keep);
+            db.prepare('UPDATE reviews SET customer_id = ? WHERE customer_id = ? AND booking_id IN (SELECT id FROM bookings WHERE customer_id = ?)').run(archived.id, guestRow.id, archived.id);
+          }
+        }
+        const { hash, salt } = hashPassword(password);
+        db.prepare("UPDATE users SET name = ?, email = ?, password_hash = ?, password_salt = ?, is_guest = 0, contact_email = NULL, phone_verified = ?, password_changed_at = datetime('now', '-1 second') WHERE id = ?")
+          .run(name, email, hash, salt, otpRequired ? 1 : 0, guestRow.id);
+        const cu = db.prepare('SELECT * FROM users WHERE id = ?').get(guestRow.id);
+        return sendJSON(res, 201, { token: sign({ id: cu.id, role: cu.role, name: cu.name }), user: publicUser(cu), converted: true });
+      }
 
       const { hash, salt } = hashPassword(password);
       const info = db.prepare(
@@ -1113,6 +1223,12 @@ async function handleApi(req, res, pathname, query) {
       if (!user) return;
       const body = await parseBody(req);
       const { spaId, serviceId, date, startTime, couponCode } = body;
+      if (user.guest && !user.gv) {
+        const upcoming = (where, arg) => db.prepare(`SELECT COUNT(*) c FROM bookings WHERE ${where} AND status IN ('pending_payment','confirmed') AND booking_date >= ?`).get(arg, localNow().date).c;
+        if (upcoming('guest_session = ?', user.gs) >= GUEST_MAX_UPCOMING || upcoming('customer_id = ?', user.id) >= GUEST_MAX_UPCOMING + 1) {
+          return sendJSON(res, 429, { error: `Guests can hold up to ${GUEST_MAX_UPCOMING} upcoming bookings. Create a free account to book more.`, code: 'guest_limit' });
+        }
+      }
       // Optional note for the spa ("focus on shoulders", "allergic to nut oils"). Text only; HTML is stripped by parseBody.
       const specialRequest = String(body.specialRequest ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
       if (specialRequest.length > 500) return sendJSON(res, 400, { error: 'Please keep your special request under 500 characters.' });
@@ -1173,6 +1289,7 @@ async function handleApi(req, res, pathname, query) {
             therapist ? therapist.id : null, therapist ? (topts.therapistId ? 'specific' : topts.gender || 'any') : null, giftAmount, gift ? gift.card.id : null, pkg ? pkg.id : null,
             depositAmount, depositAmount > 0 ? 'pending' : null, bookingFee, specialRequest || null);
       const bookingId = Number(info.lastInsertRowid);
+      if (user.guest) db.prepare('UPDATE bookings SET guest_session = ?, guest_phone = (SELECT phone FROM users WHERE id = ?) WHERE id = ?').run(user.gs, user.id, bookingId);
       applyCommission(bookingId, spa, finalAmount);
       assignBookingRef(bookingId);
       if (giftAmount > 0) {
@@ -1202,7 +1319,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       cleanupStaleBookings();
-      const rows = db.prepare(
+      let rows = db.prepare(
         `SELECT b.*, s.name as spa_name, s.city as spa_city, sv.name as service_name, r.rating AS my_rating, r.comment AS my_comment, (SELECT name FROM therapists WHERE id = b.therapist_id) AS therapist_name
          FROM bookings b
          JOIN spas s ON s.id = b.spa_id
@@ -1212,6 +1329,7 @@ async function handleApi(req, res, pathname, query) {
          ORDER BY b.booking_date DESC, b.start_time DESC`
       ).all(user.id);
       const winStmt = db.prepare('SELECT cancel_window_hours FROM spas WHERE id = ?');
+      if (user.guest) rows = rows.filter((b) => guestCanSee(user, b));
       for (const b of rows) {
         b.can_review = !b.my_rating && reviewEligible(b);
         const sp = winStmt.get(b.spa_id) || { cancel_window_hours: 4 };
@@ -1228,7 +1346,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
-      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!booking || !guestCanSee(user, booking)) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (booking.status !== 'pending_payment') return sendJSON(res, 409, { error: `This booking is already ${booking.status}.` });
       if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: "Online payment isn't available yet." });
 
@@ -1254,7 +1372,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
-      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!booking || !guestCanSee(user, booking)) return sendJSON(res, 404, { error: 'Booking not found.' });
       const body = await parseBody(req);
       if (booking.status === 'cancelled' && booking.cancel_reason === 'payment_timeout' && body.paymentId) {
         // Paid after the 10-minute hold ran out and the slot was released — refund instead of leaving money stuck.
@@ -1310,7 +1428,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
-      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!booking || !guestCanSee(user, booking)) return sendJSON(res, 404, { error: 'Booking not found.' });
       const spa = db.prepare('SELECT * FROM spas WHERE id = ?').get(booking.spa_id);
       const service = db.prepare('SELECT * FROM services WHERE id = ?').get(booking.service_id);
       if (booking.status !== 'confirmed' || booking.settlement_id) return sendJSON(res, 409, { error: 'Only confirmed upcoming bookings can be rescheduled.' });
@@ -1343,6 +1461,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'me' && parts.length === 2 && req.method === 'PUT') {
       const user = requireAuth(req, res);
       if (!user) return;
+      if (user.guest) return sendJSON(res, 403, { error: 'Guests don’t have a profile yet. Create a free account to save your details.', code: 'guest' });
       const body = await parseBody(req);
       const u = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
       const name = body.name !== undefined ? String(body.name).trim() : u.name;
@@ -1357,6 +1476,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'me' && parts[2] === 'password' && req.method === 'PUT') {
       const user = requireAuth(req, res);
       if (!user) return;
+      if (user.guest) return sendJSON(res, 403, { error: 'Guests don’t have a profile yet. Create a free account to save your details.', code: 'guest' });
       if (!checkRateLimit(req, { keyPrefix: 'pw_change', maxRequests: 10, windowMs: 15 * 60 * 1000 })) return sendJSON(res, 429, { error: 'Too many attempts. Please wait a few minutes.' });
       const body = await parseBody(req);
       const u = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
@@ -1369,6 +1489,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'me' && parts[2] === 'phone' && req.method === 'PUT') {
       const user = requireAuth(req, res);
       if (!user) return;
+      if (user.guest) return sendJSON(res, 403, { error: 'Guests don’t have a profile yet. Create a free account to save your details.', code: 'guest' });
       const body = await parseBody(req);
       const phone = normalizePhone(body.phone);
       if (!phone || phone.length < 10) return sendJSON(res, 400, { error: 'Enter a valid mobile number.' });
@@ -1383,7 +1504,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
-      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!booking || !guestCanSee(user, booking)) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (!['pending_payment', 'confirmed'].includes(booking.status)) {
         return sendJSON(res, 409, { error: 'This booking cannot be cancelled.' });
       }
@@ -1885,7 +2006,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
       const booking = db.prepare('SELECT * FROM bookings WHERE id = ? AND customer_id = ?').get(parts[2], user.id);
-      if (!booking) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!booking || !guestCanSee(user, booking)) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (db.prepare('SELECT id FROM reviews WHERE booking_id = ?').get(booking.id)) return sendJSON(res, 409, { error: 'You have already reviewed this visit.' });
       if (!reviewEligible(booking)) return sendJSON(res, 400, { error: 'You can review a visit after your appointment (within 60 days).' });
       const body = await parseBody(req);
@@ -2129,6 +2250,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'giftcards' && parts.length === 2 && req.method === 'POST') {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
+      if (user.guest) return sendJSON(res, 403, { error: 'Create a free account to buy gift cards — it only takes a minute and keeps everything in one place.', code: 'guest' });
       if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: 'Gift cards can be bought once online payments are switched on.' });
       const body = await parseBody(req);
       const amount = Number(body.amount);
@@ -2141,6 +2263,7 @@ async function handleApi(req, res, pathname, query) {
     if (parts[1] === 'packages' && parts[3] === 'buy' && req.method === 'POST') {
       const user = requireAuth(req, res, ['customer']);
       if (!user) return;
+      if (user.guest) return sendJSON(res, 403, { error: 'Create a free account to buy packages — it only takes a minute and keeps everything in one place.', code: 'guest' });
       if (!onlinePaymentsAvailable()) return sendJSON(res, 400, { error: 'Packages can be bought once online payments are switched on.' });
       const pk = db.prepare(`SELECT p.*, s.status AS spa_status, s.suspended FROM packages p JOIN spas s ON s.id = p.spa_id JOIN services sv ON sv.id = p.service_id
                              WHERE p.id = ? AND p.active = 1 AND sv.active = 1`).get(parts[2]);
@@ -2194,7 +2317,7 @@ async function handleApi(req, res, pathname, query) {
       const user = requireAuth(req, res);
       if (!user) return;
       const b = db.prepare('SELECT b.*, s.owner_id FROM bookings b JOIN spas s ON s.id = b.spa_id WHERE b.id = ?').get(parts[2]);
-      if (!b || (user.role === 'customer' && b.customer_id !== user.id) || (user.role === 'owner' && b.owner_id !== user.id)) return sendJSON(res, 404, { error: 'Booking not found.' });
+      if (!b || (user.role === 'customer' && (b.customer_id !== user.id || !guestCanSee(user, b))) || (user.role === 'owner' && b.owner_id !== user.id)) return sendJSON(res, 404, { error: 'Booking not found.' });
       if (b.payment_status !== 'paid') return sendJSON(res, 409, { error: 'The invoice is available once the booking is paid.' });
       return sendJSON(res, 200, { invoice: bookingInvoice(b) });
     }
@@ -2516,7 +2639,7 @@ async function handleApi(req, res, pathname, query) {
       let users;
       if (role === 'customer') {
         users = db.prepare(
-          `SELECT u.id, u.name, u.email, u.phone, u.phone_verified, u.role, u.created_at, u.active,
+          `SELECT u.id, u.name, CASE WHEN u.email LIKE '%@guest.bookmyspa.invalid' THEN u.contact_email ELSE u.email END AS email, u.phone, u.phone_verified, u.role, u.created_at, u.active, u.is_guest,
                   COUNT(b.id) AS booking_count,
                   COALESCE(SUM(CASE WHEN b.payment_status = 'paid' THEN b.amount ELSE 0 END), 0) AS total_spent,
                   MAX(b.booking_date) AS last_booking

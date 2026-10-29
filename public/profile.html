@@ -45,7 +45,7 @@
 <script>
 renderNav('profile'); renderFooter();
 let otpOn = false;
-if (API.requireRole()) init();
+if (API.isGuest()) { location.replace('/account.html'); } else if (API.requireRole()) init();
 async function init() {
   const { user } = await API.get('/me');
   document.getElementById('pf_name').value = user.name; document.getElementById('pf_email').value = user.email;

@@ -16,8 +16,8 @@
 
 <div class="wrap auth-wrap">
   <div class="panel">
-    <h2>Create your account</h2>
-    <p class="helper-text" style="margin-bottom:6px">Book massages and spa treatments in seconds.</p>
+    <h2 id="regTitle">Create your account</h2>
+    <p class="helper-text" style="margin-bottom:6px" id="regLede">Book massages and spa treatments in seconds.</p>
     <form id="regForm" novalidate>
       <label for="name">Full name</label>
       <input id="name" autocomplete="name" maxlength="80" placeholder="Your name">
@@ -65,6 +65,13 @@ function showOtpStatus(el, result) {
   el.style.color = result.devCode ? 'var(--gold)' : 'var(--moss)';
 }
 
+// A guest saving their bookings: prefill what we already know.
+if (API.isGuest()) {
+  const g = API.user();
+  document.getElementById('regTitle').textContent = 'Save your bookings';
+  document.getElementById('regLede').textContent = 'Add an email and password to turn your guest bookings into an account. Use the same mobile number.';
+  document.getElementById('name').value = g.name || ''; document.getElementById('phone').value = g.phone || ''; if (g.email) document.getElementById('email').value = g.email;
+}
 let otpEnabled = false, otpSentTo = null;
 getConfig().then(cfg => {
   otpEnabled = !!cfg.otp;
@@ -104,10 +111,10 @@ document.getElementById('regForm').addEventListener('submit', async (e) => {
   if (otpEnabled && !/^\d{6}$/.test(otpCode)) return toast('Enter the 6-digit code sent to your phone.', 'error');
   const btn = document.getElementById('regBtn'); btn.disabled = true; btn.textContent = 'Creating account…';
   try {
-    const { token, user } = await API.post('/auth/register', { name, email, phone, password, otpCode, portal: PORTAL });
+    const { token, user, converted } = await API.post('/auth/register', { name, email, phone, password, otpCode, portal: PORTAL });
     API.saveSession(token, user);
-    toast('Welcome to BookMySpa, ' + user.name.split(' ')[0] + '!');
-    setTimeout(() => location.href = safeNext('/'), 500);
+    toast(converted ? 'Account created — your bookings are saved.' : 'Welcome to BookMySpa, ' + user.name.split(' ')[0] + '!');
+    setTimeout(() => location.href = safeNext(converted ? '/account.html' : '/'), 500);
   } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Create account'; }
 });
 </script>

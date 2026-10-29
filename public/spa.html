@@ -37,6 +37,38 @@
 </div>
 
 <!-- Payment modal -->
+<div class="modal-overlay" id="continueModal">
+  <div class="modal continue-sheet" role="dialog" aria-modal="true" aria-labelledby="ctTitle">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div><h3 id="ctTitle" style="margin:0">Almost there</h3><p class="ct-summary" id="ctSummary"></p></div>
+      <button class="btn small outline" type="button" onclick="document.getElementById('continueModal').classList.remove('open')">Close</button>
+    </div>
+    <form id="guestForm" class="ct-guest" novalidate>
+      <div class="ct-head"><span class="ct-badge">Fastest</span><strong>Continue as a guest</strong><span class="helper-text" style="margin:0">No password. Takes 20 seconds.</span></div>
+      <label for="gName">Your name</label>
+      <input id="gName" autocomplete="name" maxlength="80" placeholder="Full name" required>
+      <label for="gPhone">Mobile number</label>
+      <div class="ct-phone"><span>+91</span><input id="gPhone" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" placeholder="10-digit mobile" required></div>
+      <label for="gEmail">Email <span style="font-weight:400;color:var(--ink-soft)">(optional, for your receipt)</span></label>
+      <input id="gEmail" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">
+      <div id="gOtpBox" hidden>
+        <label for="gOtp">6-digit code sent to your mobile</label>
+        <input id="gOtp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••">
+        <p class="helper-text" id="gOtpStatus" style="margin:4px 0 0"></p>
+      </div>
+      <p class="ct-msg" id="gMsg" role="alert"></p>
+      <button class="btn gold block" type="submit" id="gBtn" style="margin-top:14px">Continue as guest</button>
+      <ul class="ct-perks"><li>Your booking ID arrives instantly</li><li>Manage it anytime with Find booking</li><li>Turn it into an account later, if you like</li></ul>
+    </form>
+    <div class="ct-or"><span>or</span></div>
+    <div class="ct-accounts">
+      <a class="btn outline block" id="ctLogin" href="/login.html">Log in</a>
+      <a class="btn outline block" id="ctSignup" href="/register.html">Create account</a>
+    </div>
+    <p class="helper-text" style="margin:10px 0 0;text-align:center">An account keeps your bookings, gift cards and packages in one place.</p>
+  </div>
+</div>
+
 <div class="modal-overlay" id="payModal">
   <div class="modal">
     <h3>Confirm &amp; pay</h3>
@@ -157,6 +189,7 @@ async function loadSpa() {
     renderServices();
     renderPackages();
     document.getElementById('mainContent').style.display = 'grid';
+    restorePending();
   } catch (e) {
     document.getElementById('spaHeader').innerHTML = `<div class="empty-state"><div class="big">🙁</div><p>${e.message}</p></div>`;
   }
@@ -404,12 +437,81 @@ function pickSlot(start) {
   btn.textContent = 'Book ' + formatTime(start);
 }
 
+// ---- Not signed in: continue as a guest, or log in / sign up and come straight back to this booking ----
+const PENDING_KEY = 'bms_pending_booking';
+function savePending() {
+  try { sessionStorage.setItem(PENDING_KEY, JSON.stringify({ spaId, serviceId: selectedServiceId, date: selectedDate, slot: selectedSlot, tChoice, at: Date.now() })); } catch {}
+}
+function restorePending() {
+  let p = null;
+  try { p = JSON.parse(sessionStorage.getItem(PENDING_KEY)); sessionStorage.removeItem(PENDING_KEY); } catch {}
+  if (!p || p.spaId !== spaId || Date.now() - p.at > 30 * 60000 || !servicesData.some(s => s.id === p.serviceId)) return;
+  selectedServiceId = p.serviceId; tChoice = p.tChoice || { therapistId: null, gender: null };
+  renderServices(); renderBookingPanel();
+  if (p.date && dateOptions().includes(p.date)) { selectedDate = p.date; document.getElementById('dateSelect').value = p.date; }
+  if (p.slot) { selectedSlot = p.slot; resetClock(); }
+  loadSlots().then(() => {
+    const ok = lastSlots.some(s => s.start_time === p.slot && s.available);
+    if (ok) { pickSlot(p.slot); if (API.isLoggedIn()) openPayModal(); }
+    else if (p.slot) { selectedSlot = null; toast('That time was just taken. Please pick another.', 'error'); }
+  });
+}
+let guestOtpOn = false, guestOtpSentTo = null;
+async function openContinue() {
+  savePending();
+  const service = servicesData.find(s => s.id === selectedServiceId);
+  document.getElementById('ctSummary').textContent = `${service.name} · ${formatDate(selectedDate)} · ${formatTime(selectedSlot)}`;
+  const next = encodeURIComponent(location.pathname + location.search);
+  document.getElementById('ctLogin').href = '/login.html?next=' + next;
+  document.getElementById('ctSignup').href = '/register.html?next=' + next;
+  guestOtpOn = !!(await getConfig()).otp;
+  document.getElementById('gBtn').textContent = guestOtpOn ? (guestOtpSentTo ? 'Verify & continue' : 'Send code') : 'Continue as guest';
+  document.getElementById('gMsg').textContent = '';
+  document.getElementById('continueModal').classList.add('open');
+  setTimeout(() => document.getElementById('gName').focus(), 80);
+}
+document.getElementById('gPhone').addEventListener('input', (e) => {
+  e.target.value = e.target.value.replace(/\D/g, '').slice(0, 10);
+  if (guestOtpSentTo && guestOtpSentTo !== e.target.value) { guestOtpSentTo = null; document.getElementById('gOtpBox').hidden = true; document.getElementById('gBtn').textContent = 'Send code'; }
+});
+document.getElementById('guestForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById('gMsg'), btn = document.getElementById('gBtn');
+  const name = document.getElementById('gName').value.trim(), phone = document.getElementById('gPhone').value.trim(), email = document.getElementById('gEmail').value.trim();
+  msg.innerHTML = '';
+  if (name.length < 2) { msg.textContent = 'Please enter your name.'; return document.getElementById('gName').focus(); }
+  if (!/^[6-9]\d{9}$/.test(phone)) { msg.textContent = 'Enter your 10-digit mobile number.'; return document.getElementById('gPhone').focus(); }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { msg.textContent = 'That email doesn’t look right. You can leave it empty.'; return; }
+  btn.disabled = true;
+  try {
+    if (guestOtpOn && guestOtpSentTo !== phone) {
+      btn.textContent = 'Sending…';
+      const r = await API.post('/auth/otp/send', { phone, purpose: 'guest' });
+      guestOtpSentTo = phone;
+      document.getElementById('gOtpBox').hidden = false;
+      document.getElementById('gOtpStatus').textContent = r.devCode ? `Development mode — your code is ${r.devCode}` : 'Code sent by SMS. It expires in 5 minutes.';
+      document.getElementById('gOtp').focus();
+      btn.textContent = 'Verify & continue';
+      return;
+    }
+    btn.textContent = 'One moment…';
+    const r = await API.post('/auth/guest', { name, phone, email, otpCode: document.getElementById('gOtp').value.trim() });
+    API.saveSession(r.token, r.user);
+    renderNav();
+    document.getElementById('continueModal').classList.remove('open');
+    if (r.message) toast(r.message);
+    try { sessionStorage.removeItem(PENDING_KEY); } catch {}
+    openPayModal();
+  } catch (err) {
+    if (err.data && err.data.code === 'has_account') {
+      msg.innerHTML = `${esc(err.message)} <a href="${document.getElementById('ctLogin').getAttribute('href')}">Log in</a>`;
+    } else msg.textContent = err.message;
+    btn.textContent = guestOtpOn ? (guestOtpSentTo ? 'Verify & continue' : 'Send code') : 'Continue as guest';
+  } finally { btn.disabled = false; }
+});
+
 async function openPayModal() {
-  if (!API.isLoggedIn()) {
-    toast('Please log in as a customer to book.', 'error');
-    setTimeout(() => window.location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search), 700);
-    return;
-  }
+  if (!API.isLoggedIn()) return openContinue();
   const user = API.user();
   if (user.role !== 'customer') {
     toast('Only customer accounts can book slots.', 'error');
@@ -552,6 +654,7 @@ function renderPackages() {
     }).join('')}</div></div>`;
 }
 async function buyPackage(id, btn) {
+  if (API.isGuest()) { toast('Create a free account to buy packages — your sessions are saved to your Wallet.', 'error'); return setTimeout(() => location.href = '/register.html?from=guest&next=' + encodeURIComponent(location.pathname + location.search), 900); }
   if (!API.isLoggedIn() || API.user().role !== 'customer') { toast('Log in to buy a package.', 'error'); return setTimeout(() => location.href = '/login.html?next=' + encodeURIComponent(location.pathname + location.search), 700); }
   btn.disabled = true;
   try {
@@ -591,7 +694,7 @@ async function confirmBooking() {
     if (booking.status === 'confirmed') {
       // Confirmed server-side (pay at spa, package session, or fully covered by a gift card).
       closePayModal();
-      celebrate('Booking confirmed', (message || 'Pay at the spa.') + ' Confirmation sent by SMS & WhatsApp.', () => window.location.href = '/account.html');
+      celebrate('Booking confirmed', (message || 'Pay at the spa.') + ' Confirmation sent by SMS & WhatsApp.' + guestNote(booking), () => window.location.href = '/account.html');
       return;
     }
 
@@ -643,6 +746,7 @@ async function confirmBooking() {
   }
 }
 
+function guestNote(b) { return API.isGuest() && b && b.booking_ref ? ` Your booking ID is ${b.booking_ref} — keep it to find this booking anytime.` : ''; }
 async function finishVerification(bookingId, payload) {
   const btn = document.getElementById('confirmPayBtn');
   try {
@@ -650,7 +754,7 @@ async function finishVerification(bookingId, payload) {
     if (result.success) {
       const channelLabel = 'SMS & WhatsApp';
       closePayModal();
-      celebrate('Payment received — you’re booked', `Confirmation sent via ${channelLabel}.`, () => window.location.href = '/account.html');
+      celebrate('Payment received — you’re booked', `Confirmation sent via ${channelLabel}.` + guestNote(result.booking), () => window.location.href = '/account.html');
     } else {
       toast(result.message, 'error');
       btn.disabled = false; btn.textContent = 'Try again';

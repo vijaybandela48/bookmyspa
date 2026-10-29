@@ -10,7 +10,9 @@ const buckets = new Map(); // key -> { count, windowStart }
 
 function getClientKey(req) {
   const forwarded = req.headers['x-forwarded-for'];
-  const ip = forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress;
+  // Railway's proxy appends the address it actually saw, so use the LAST entry: earlier entries can be
+  // typed in by the visitor and would let anyone dodge the limits by sending a fake header.
+  const ip = forwarded ? forwarded.split(',').pop().trim() : req.socket.remoteAddress;
   return ip || 'unknown';
 }
 

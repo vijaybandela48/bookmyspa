@@ -113,7 +113,7 @@ const delta = (cur, prev) => (prev ? Math.round(((cur - prev) / prev) * 1000) / 
 function customerTable(ids) {
   const today = todayLocal();
   const rows = db.prepare(
-    `SELECT b.customer_id, b.booking_date, b.amount, b.service_id, sv.name AS service_name, u.name, u.phone, u.email
+    `SELECT b.customer_id, b.booking_date, b.amount, b.service_id, sv.name AS service_name, u.name, u.phone, CASE WHEN u.email LIKE '%@guest.bookmyspa.invalid' THEN u.contact_email ELSE u.email END AS email
      FROM bookings b JOIN users u ON u.id = b.customer_id JOIN services sv ON sv.id = b.service_id
      WHERE b.spa_id IN (${inList(ids)}) AND ${VISIT.replace(/@today/g, today)} ORDER BY b.booking_date`
   ).all();

@@ -62,8 +62,9 @@ function requireAuth(req, res, roles = null) {
   }
   // Sessions issued before the latest password change (or for deleted accounts) are no longer valid.
   const { db } = require('./db');
-  const row = db.prepare('SELECT role, password_changed_at, active FROM users WHERE id = ?').get(user.id);
-  if (!row || row.role !== user.role || row.active === 0 ||
+  const row = db.prepare('SELECT role, password_changed_at, active, is_guest FROM users WHERE id = ?').get(user.id);
+  // A guest session ends once that guest turns into a full account (they sign in with the new account instead).
+  if (!row || row.role !== user.role || row.active === 0 || (user.guest && row.is_guest === 0) ||
       (row.password_changed_at && Date.parse(row.password_changed_at.replace(' ', 'T') + 'Z') > user.iat * 1000)) {
     sendJSON(res, 401, { error: 'Your session has expired. Please log in again.' });
     return null;
